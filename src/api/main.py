@@ -1,16 +1,12 @@
-
 import hmac
 import hashlib
 import json
 import uvicorn
 import logging
-import time
-import jwt
-import requests
 from fastapi import FastAPI, Request, HTTPException, Depends, status
 from typing import Dict, Any
 from src.config import settings
-from src.worker.tasks import scan_repo_task
+from src.worker.tasks import scan_repo_task # Import the task we just verified
 
 logger = logging.getLogger(__name__)
 
@@ -67,48 +63,18 @@ async def github_webhook(
         # We want to scan when a PR is opened or new commits are pushed (synchronize)
         if action in ["opened", "synchronize"]:
             repo_url = payload["repository"]["clone_url"]
-            # 1. Generate a JWT for the GitHub App
-            with open(settings.GITHUB_PRIVATE_KEY_PATH, 'r') as pem_file:
-                private_key = pem_file.read()
-
-            now = int(time.time())
-            payload_jwt = {
-                'iat': now - 60,
-                'exp': now + (10 * 60),
-                'iss': settings.GITHUB_APP_ID
-            }
-            encoded_jwt = jwt.encode(payload_jwt, private_key, algorithm='RS256')
-
-            # 2. Get installation ID for the repo
-            repo_owner = payload['repository']['owner']['login']
-            repo_name = payload['repository']['name']
-            headers = {
-                'Authorization': f'Bearer {encoded_jwt}',
-                'Accept': 'application/vnd.github+json'
-            }
-            installation_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/installation"
-            installation_resp = requests.get(installation_url, headers=headers)
-            if installation_resp.status_code != 200:
-                logger.error(f"Failed to get installation ID: {installation_resp.text}")
-                raise HTTPException(status_code=500, detail="Failed to get GitHub App installation ID")
-            installation_id = installation_resp.json()['id']
-
-            # 3. Create installation access token
-            access_token_url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
-            access_token_resp = requests.post(access_token_url, headers=headers)
-            if access_token_resp.status_code != 201:
-                logger.error(f"Failed to get installation access token: {access_token_resp.text}")
-                raise HTTPException(status_code=500, detail="Failed to get GitHub App installation token")
-            access_token = access_token_resp.json()['token']
-
-            # 4. Hand off the job to the Worker
+            # We will generate and retrieve the Installation Token in V2/V3, 
+            # for MVP we use a dummy until the worker is integrated.
+            
+            # 2. Hand off the job to the Worker
             logger.info(f"➡️ Webhook received. Queuing scan for {repo_url}")
             scan_repo_task.delay(
-                repo_url=repo_url,
-                token=access_token,
+                repo_url=repo_url, 
+                token="DUMMY_INSTALLATION_TOKEN",
+                # Pass the necessary PR context for the worker to report results
                 pr_context={
-                    'owner': repo_owner,
-                    'repo': repo_name,
+                    'owner': payload['repository']['owner']['login'],
+                    'repo': payload['repository']['name'],
                     'pr_number': payload['pull_request']['number']
                 }
             )
