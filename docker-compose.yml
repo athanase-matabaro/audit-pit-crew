@@ -7,36 +7,36 @@ services:
     container_name: audit_pit_redis
     expose:
       - 6379
-    # Volumes are useful for persistence, but for MVP testing, we omit them.
     restart: always
 
   # The API Server (FastAPI)
   api:
-    build: . # Build using the Dockerfile in the current directory
+    build: .
     container_name: audit_pit_api
     command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000" # Expose to the host machine
+      - "8000:8000"
     env_file:
-      - .env # Inject environment variables from the host .env file
+      - .env
     depends_on:
       - redis
-    # Mount the code for live reloading during development (optional but useful)
+    # Mount the project code
     volumes:
       - .:/usr/src/app
 
   # The Celery Worker
   worker:
-    build: . # Build using the same Dockerfile
+    build: .
     container_name: audit_pit_worker
     # Override the default command to run the Celery worker
     command: celery -A src.worker.celery_app worker --loglevel=INFO
     env_file:
-      - .env # Inject environment variables
+      - .env
     depends_on:
       - redis
-      - api # Ensure API is up to register tasks properly
-    # Mount the project for live reloading and also map the host project root for tests.
+      - api
+    # Mount only the necessary project path. (Removed redundant /app_root mount)
     volumes:
       - .:/usr/src/app
-      - /home/athanase-matabaro/Dev/audit-pit-crew:/app_root
+      # Note: The GITHUB_PRIVATE_KEY_PATH in your .env must point to
+      # the file inside this volume, e.g., /usr/src/app/my-key.pem
