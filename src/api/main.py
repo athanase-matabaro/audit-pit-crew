@@ -52,6 +52,9 @@ async def github_webhook(
     """
     event_type = request.headers.get("X-GitHub-Event")
     payload: Dict[str, Any] = json.loads(body.decode('utf-8'))
+    
+    # 🌟 FIX: Initialize 'action' so it is available to the final return statement
+    action = None
 
     # 1. Listen for PR events only
     if event_type == "pull_request":
@@ -67,16 +70,24 @@ async def github_webhook(
             logger.info(f"➡️ Webhook received. Queuing scan for {repo_url}")
             scan_repo_task.delay(
                 repo_url=repo_url, 
-                token="DUMMY_INSTALLATION_TOKEN" 
+                token="DUMMY_INSTALLATION_TOKEN",
+                # Pass the necessary PR context for the worker to report results
+                pr_context={
+                    'owner': payload['repository']['owner']['login'],
+                    'repo': payload['repository']['name'],
+                    'pr_number': payload['pull_request']['number']
+                }
             )
             
             # 3. Return fast response to GitHub (CRITICAL)
             return {"status": "queued", "repo": repo_url}
 
     # Ignore other events (push, commit, issues, etc.)
+    # This now safely uses 'action' which is initialized to None if not a PR event.
     return {"status": "ignored", "message": f"Event type {event_type} or action {action} ignored"}
 
 # --- Running the Server (For local testing) ---
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    
