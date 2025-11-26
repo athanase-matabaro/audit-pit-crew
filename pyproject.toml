@@ -16,6 +16,9 @@ dependencies = [
     "redis>=4.6.0",
     "httpx>=0.24.0",
     "python-multipart>=0.0.6",
+    # Libraries for GitHub App Authentication
+    "pyjwt",
+    "requests",
     # We will need these later for scanning
     "slither-analyzer>=0.9.0", 
     "solc-select>=1.0.0"
