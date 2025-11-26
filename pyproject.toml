@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audit-pit-crew"
+version = "0.1.0"
+description = "Automated Pre-Audit Security Scanner"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "celery>=5.3.0",
+    "redis>=4.6.0",
+    "httpx>=0.24.0",
+    "python-multipart>=0.0.6",
+    # We will need these later for scanning
+    "slither-analyzer>=0.9.0", 
+    "solc-select>=1.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.0.0"
+]

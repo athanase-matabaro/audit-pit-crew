@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # The Message Broker Service
+  redis:
+    image: redis:7-alpine
+    container_name: audit_pit_redis
+    expose:
+      - 6379
+    # Volumes are useful for persistence, but for MVP testing, we omit them.
+    restart: always
+
+  # The API Server (FastAPI)
+  api:
+    build: . # Build using the Dockerfile in the current directory
+    container_name: audit_pit_api
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000" # Expose to the host machine
+    env_file:
+      - .env # Inject environment variables from the host .env file
+    depends_on:
+      - redis
+    # Mount the code for live reloading during development (optional but useful)
+    volumes:
+      - .:/usr/src/app
+
+  # The Celery Worker
+  worker:
+    build: . # Build using the same Dockerfile
+    container_name: audit_pit_worker
+    # Override the default command to run the Celery worker
+    command: celery -A src.worker.celery_app worker --loglevel=INFO
+    env_file:
+      - .env # Inject environment variables
+    depends_on:
+      - redis
+      - api # Ensure API is up to register tasks properly
+    # Mount the project for live reloading and also map the host project root for tests.
+    volumes:
+      - .:/usr/src/app
+      - /home/athanase-matabaro/Dev/audit-pit-crew:/app_root
