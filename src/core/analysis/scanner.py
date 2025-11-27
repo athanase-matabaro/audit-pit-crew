@@ -2,44 +2,67 @@ import subprocess
 import json
 import os
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # Configure a logger for this module
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+# The basicConfig line should be removed or commented out if configuration is handled centrally
+# logging.basicConfig(level=logging.INFO) 
 
 class SlitherScanner:
     """
     Wraps the Slither CLI tool to scan local directories.
     """
 
-    def run(self, target_path: str) -> List[Dict[str, Any]]:
+    def run(self, target_path: str, files: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        Runs Slither on the target_path and returns a list of Critical/Medium issues.
+        Runs Slither on the target_path.
+        
+        Args:
+            target_path: The path to the cloned repository.
+            files: Optional list of relative file paths to scan (for diff scanning).
+
+        Returns:
+            A list of issues found, filtered for Medium/High severity.
         """
         logger.info(f"🔍 Starting Slither scan on: {target_path}")
 
         # Define where to save the raw JSON report
         output_file = os.path.join(target_path, "slither_report.json")
 
-        # Construct the command: slither . --json slither_report.json
-        cmd = ["slither", ".", "--json", output_file]
+        # --- CORRECTED COMMAND CONSTRUCTION ---
+        cmd = ["slither"]
+        
+        if files:
+            logger.info(f"⚡ Running efficient scan on {len(files)} changed files: {files}")
+            # FIX: Use the list of files as the targets instead of '.'
+            # Slither must be run from the root directory (target_path) 
+            # and the files must be relative paths.
+            cmd.extend(files)
+        else:
+            logger.info("Scanning entire project...")
+            # Default to scanning the whole project if no files are provided
+            cmd.append(".")
+            
+        # Add the output flags AFTER the target files/directory
+        cmd.extend(["--json", output_file])
+        # --- END CORRECTED CONSTRUCTION ---
 
         try:
-            # Run the command. We don't use check=True because Slither returns
-            # non-zero exit codes when bugs are found (which is good!).
+            # Run the command. cwd=target_path is essential.
             result = subprocess.run(
                 cmd,
                 cwd=target_path,
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                timeout=300 
             )
 
             # Check if the JSON file was actually created
             if not os.path.exists(output_file):
                 logger.error("❌ Slither failed to generate a report.")
-                # Log the captured output to see why
+                # Log the captured output to see why it failed
                 logger.error(f"Slither stdout: {result.stdout}")
                 logger.error(f"Slither stderr: {result.stderr}")
                 return []
@@ -52,6 +75,9 @@ class SlitherScanner:
 
         except FileNotFoundError:
             logger.error("❌ Slither command not found. Is it installed?")
+            return []
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Slither scan timed out after 300 seconds.")
             return []
         except Exception as e:
             logger.error(f"❌ Unexpected error during scan: {e}")
