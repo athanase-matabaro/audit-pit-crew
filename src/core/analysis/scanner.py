@@ -6,8 +6,6 @@ from typing import List, Dict, Any, Optional
 
 # Configure a logger for this module
 logger = logging.getLogger(__name__)
-# The basicConfig line should be removed or commented out if configuration is handled centrally
-# logging.basicConfig(level=logging.INFO) 
 
 class SlitherScanner:
     """
@@ -35,57 +33,62 @@ class SlitherScanner:
         
         if files:
             logger.info(f"⚡ Running efficient scan on {len(files)} changed files: {files}")
-            # FIX: Use the list of files as the targets instead of '.'
             # Slither must be run from the root directory (target_path) 
             # and the files must be relative paths.
             cmd.extend(files)
         else:
-            logger.info("Scanning entire project...")
-            # Default to scanning the whole project if no files are provided
-            cmd.append(".")
-            
-        # Add the output flags AFTER the target files/directory
+            logger.info("Scanning entire project (No files specified).")
+            # Slither can be pointed to the current directory when scanning all files
+            cmd.append(".") 
+        
+        # Always append the output format arguments
         cmd.extend(["--json", output_file])
-        # --- END CORRECTED CONSTRUCTION ---
+        # --- END COMMAND CONSTRUCTION ---
 
         try:
-            # Run the command. cwd=target_path is essential.
+            # Run the command. We don't use check=True because Slither returns
+            # non-zero exit codes when bugs are found (which is good!).
             result = subprocess.run(
                 cmd,
                 cwd=target_path,
                 capture_output=True,
                 text=True,
-                check=False,
-                timeout=300 
+                check=False
             )
 
             # Check if the JSON file was actually created
             if not os.path.exists(output_file):
                 logger.error("❌ Slither failed to generate a report.")
-                # Log the captured output to see why it failed
-                logger.error(f"Slither stdout: {result.stdout}")
-                logger.error(f"Slither stderr: {result.stderr}")
-                return []
+                # Log the captured output to see why
+                logger.error(f"Slither stdout: {result.stdout.strip()}")
+                logger.error(f"Slither stderr: {result.stderr.strip()}")
+                # If the JSON file is missing, something critical failed (e.g., compilation)
+                return [] 
 
-            # Read and parse the JSON
+            # Read the JSON report
             with open(output_file, 'r') as f:
-                data = json.load(f)
-
-            return self._filter_results(data)
+                raw_data = json.load(f)
 
         except FileNotFoundError:
-            logger.error("❌ Slither command not found. Is it installed?")
+            logger.error(f"❌ Slither command not found. Ensure 'slither-analyzer' is installed in the worker container.")
             return []
-        except subprocess.TimeoutExpired:
-            logger.error("❌ Slither scan timed out after 300 seconds.")
+        except json.JSONDecodeError:
+            logger.error(f"❌ Slither generated invalid JSON report at {output_file}.")
             return []
         except Exception as e:
-            logger.error(f"❌ Unexpected error during scan: {e}")
+            logger.error(f"❌ An unexpected error occurred during Slither execution: {e}")
             return []
+        
+        finally:
+            # Clean up the report file after reading it
+            if os.path.exists(output_file):
+                os.remove(output_file)
 
-    def _filter_results(self, raw_data: Dict) -> List[Dict[str, Any]]:
+        return self._process_raw_report(raw_data)
+
+    def _process_raw_report(self, raw_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Private method to clean up the JSON and remove 'Low' severity noise.
+        Parses the raw Slither JSON and remove 'Low' severity noise.
         """
         clean_issues = []
         
@@ -108,6 +111,7 @@ class SlitherScanner:
                 
                 if elements and 'source_mapping' in elements[0]:
                     file_path = elements[0]['source_mapping'].get('filename_relative', 'Unknown')
+                    # Get the start line of the issue location
                     line_number = elements[0]['source_mapping'].get('lines', [0])[0]
 
                 clean_issues.append({

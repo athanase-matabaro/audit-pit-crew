@@ -1,22 +1,22 @@
 import logging
 import json
-from typing import Dict, Any, List # Added List import
+from typing import Dict, Any, List 
 from celery import shared_task
 from src.worker.celery_app import celery_app
 from src.core.git_manager import GitManager
 from src.core.analysis.scanner import SlitherScanner
 from src.core.github_reporter import GitHubReporter
 from src.core.github_auth import GitHubAuth
-# --- NEW IMPORT ---
 from src.core.github_client import GitHubClient 
 
 logger = logging.getLogger(__name__)
 
+# FIX: Add **kwargs to absorb the unexpected 'token' argument coming from the API
 @celery_app.task(name="scan_repo_task", bind=True)
-def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None):
+def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwargs):
     """
     Background task that clones, scans, and posts results based on PR context.
-    Now implements PR diff scanning for efficiency.
+    Now implements PR diff scanning for efficiency and relevance on Pull Requests.
     """
 
     logger.info(f"🚀 [Task {self.request.id}] Starting scan for: {repo_url}")
@@ -27,13 +27,17 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None):
     scanner = SlitherScanner()
     workspace = None
     
+    # Safely extract PR context variables
+    pr_owner = pr_context.get('owner') if pr_context else None
+    pr_repo = pr_context.get('repo') if pr_context else None
+    pr_number = pr_context.get('pr_number') if pr_context else None
+    base_ref = pr_context.get('base_ref') if pr_context else None
+    head_ref = pr_context.get('head_ref') if pr_context else None
+    installation_id = pr_context.get("installation_id") if pr_context else None
+
     try:
         # --- 1. Get Authentication & Context ---
-        pr_owner = pr_context['owner']
-        pr_repo = pr_context['repo']
-        pr_number = pr_context['pr_number']
-        installation_id = pr_context.get("installation_id")
-
+        
         if not installation_id:
             logger.error("❌ Missing installation_id in pr_context. Skipping.")
             return {"status": "error", "message": "Missing installation_id"}
@@ -43,32 +47,44 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None):
             logger.error("❌ Failed to get installation token. Skipping.")
             return {"status": "error", "message": "Failed to get installation token"}
 
-        # --- 2. Fetch Changed Files (Diff Logic) ---
-        # Initialize the client with the necessary context and token
-        client = GitHubClient(token, pr_owner, pr_repo, pr_number)
+        # --- 2. Setup Git Environment ---
+        workspace = git.create_workspace()
         
-        # This list will contain file paths like ['contracts/token.sol', 'src/vulnerable.sol']
-        changed_files: List[str] = client.get_changed_solidity_files()
-        
-        if not changed_files:
-            logger.info("ℹ️ No Solidity files found in PR diff. Skipping scan but proceeding to report a clean status.")
-            # Skip the heavy cloning/scanning but still post a 'clean' report
-            issues = []
-        else:
-            # --- 3. Create Workspace & Clone (Only if files need scanning) ---
-            workspace = git.create_workspace()
-            # The token is needed for cloning private repositories
-            git.clone_repo(workspace, repo_url, token)
+        # Determine if we run differential scanning (requires both base and head refs)
+        is_pr_scan = bool(base_ref and head_ref)
 
-            # --- 4. Scan Only Changed Files ---
-            # IMPORTANT: We pass the list of files to the scanner here.
-            issues = scanner.run(workspace, files=changed_files)
-        
+        if is_pr_scan:
+            logger.info("⚙️ Running differential PR scan. Cloning full history.")
+            # For diff scanning, we need the full history to compare commits
+            git.clone_repo(workspace, repo_url, token, shallow_clone=False)
+            
+            # Fetch and checkout the necessary references
+            git.fetch_base_ref(workspace, base_ref)
+            git.checkout_ref(workspace, head_ref)
+            
+            # Get list of files to scan
+            files_to_scan = git.get_changed_solidity_files(workspace, base_ref, head_ref)
+
+            if not files_to_scan:
+                logger.info(f"ℹ️ [Task {self.request.id}] No Solidity files changed between {base_ref} and {head_ref}. Clean scan.")
+                issues: List[Dict[str, Any]] = []
+            else:
+                # --- 3. Scan only changed files ---
+                # Pass the list of files to the scanner
+                issues = scanner.run(workspace, files=files_to_scan)
+
+        else:
+            logger.info("⚙️ Running standard full repository scan (not a PR).")
+            # For full scan, a shallow clone is fine
+            git.clone_repo(workspace, repo_url, token, shallow_clone=True)
+            # --- 3. Run full scan ---
+            issues = scanner.run(workspace)
+
         logger.info(f"✅ [Task {self.request.id}] Scan complete. Found {len(issues)} issues.")
 
-        # --- 5. Report Results ---
-        # We report even if issues is empty to confirm the scan ran successfully
-        if pr_context:
+
+        # --- 4. Report Results ---
+        if pr_owner and pr_repo and pr_number:
             try:
                 reporter = GitHubReporter(
                     token=token,
@@ -79,18 +95,18 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None):
                 # The reporter posts a 'Clean Scan' if issues is empty.
                 reporter.post_report(issues)
                 logger.info(f"📤 [Task {self.request.id}] Successfully posted report to PR #{pr_number}.")
-            except KeyError as e:
-                logger.error(f"❌ [Task {self.request.id}] Reporting skipped: Malformed PR context (Missing key: {e}).")
             except Exception as e:
                 logger.error(f"❌ [Task {self.request.id}] GitHub Reporting failed: {str(e)}")
         else:
-            logger.info(f"ℹ️ [Task {self.request.id}] Skipping GitHub posting: Missing PR context.")
+            # This path is usually hit for non-PR scans where pr_context is None
+            logger.info(f"ℹ️ [Task {self.request.id}] Skipping GitHub posting: Missing PR context (owner/repo/number).")
 
         # --- 6. Return summary ---
         return {"status": "success", "issues_count": len(issues)}
 
+    # Robust error handling for both KeyError (missing context) and general exceptions
     except KeyError as e:
-        logger.error(f"❌ [Task {self.request.id}] Failed: Malformed PR context (Missing key: {e}).")
+        logger.error(f"❌ [Task {self.request.id}] Failed: Malformed PR context or missing essential data (Key: {e}).")
         return {"status": "error", "message": f"Malformed PR context: {e}"}
     except Exception as e:
         logger.error(f"❌ [Task {self.request.id}] Failed: {str(e)}")
