@@ -17,5 +17,5 @@ contract VulnerableBank {
         require(success, "Transfer failed");
 
         balances[msg.sender] = 0;
-    }audit-pit-crew-scanner.
+    }
 }

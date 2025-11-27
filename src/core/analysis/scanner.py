@@ -28,17 +28,20 @@ class SlitherScanner:
         try:
             # Run the command. We don't use check=True because Slither returns
             # non-zero exit codes when bugs are found (which is good!).
-            subprocess.run(
+            result = subprocess.run(
                 cmd,
                 cwd=target_path,
                 capture_output=True,
                 text=True,
-                check=False 
+                check=False
             )
 
             # Check if the JSON file was actually created
             if not os.path.exists(output_file):
                 logger.error("❌ Slither failed to generate a report.")
+                # Log the captured output to see why
+                logger.error(f"Slither stdout: {result.stdout}")
+                logger.error(f"Slither stderr: {result.stderr}")
                 return []
 
             # Read and parse the JSON

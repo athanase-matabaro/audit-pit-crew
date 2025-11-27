@@ -12,18 +12,22 @@ class GitHubReporter:
     def __init__(self, token: str, repo_owner: str, repo_name: str, pr_number: int):
         self.token = token
         self.base_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/issues/{pr_number}/comments"
+        
+        # FIX: Changed "token" to "Bearer"
+        # GitHub App Installation Tokens require the "Bearer" prefix.
         self.headers = {
-            "Authorization": f"token {self.token}",
+            "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github.v3+json",
         }
-        self.run_tag = "" # Used to identify our own comments
+        self.run_tag = "<!-- audit-pit-crew-report-v1 -->"
 
     def _format_report(self, issues: List[Dict[str, Any]]) -> str:
         """
         Formats the list of issues into a comprehensive Markdown report.
         """
+        # If the list is empty (Clean Scan), return a success message
         if not issues:
-            return f"{self.run_tag}\n\n## 🛡️ Audit Pit-Crew Report\n\n✅ **Scan Complete:** No High or Medium severity issues found. Great job!"
+            return f"{self.run_tag}\n\n## 🛡️ Audit Pit-Crew Report\n\n✅ **Scan Complete:** No Critical or High severity issues found. Great job!"
 
         report = f"{self.run_tag}\n\n## 🚨 Audit Pit-Crew Security Report ({len(issues)} Findings)"
         
@@ -45,9 +49,12 @@ class GitHubReporter:
 <summary>Click for Full Description</summary>
 \n
 ```text
-{issue['description'].strip()}</details> """ 
+{issue['description'].strip()}
+```
+</details>
+"""
         return report
-    
+
     def post_report(self, issues: List[Dict[str, Any]]):
         """
         Formats the issues and posts the comment to GitHub.
@@ -64,10 +71,8 @@ class GitHubReporter:
         except requests.exceptions.HTTPError as e:
             logger.error(f"❌ Failed to post report. HTTP Error: {e.response.status_code}")
             logger.error(f"GitHub API response: {e.response.text}")
-            # If 404/403, usually means the token or repo/PR number is wrong
             raise Exception("GitHub Reporter failed to post comment")
         except Exception as e:
             logger.error(f"❌ An unexpected error occurred: {e}")
             raise e
-        
         

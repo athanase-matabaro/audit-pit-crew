@@ -63,19 +63,18 @@ async def github_webhook(
         # We want to scan when a PR is opened or new commits are pushed (synchronize)
         if action in ["opened", "synchronize"]:
             repo_url = payload["repository"]["clone_url"]
-            # We will generate and retrieve the Installation Token in V2/V3, 
+            # We will generate and retrieve the Installation Token in V2/V3,
             # for MVP we use a dummy until the worker is integrated.
             
             # 2. Hand off the job to the Worker
             logger.info(f"➡️ Webhook received. Queuing scan for {repo_url}")
             scan_repo_task.delay(
-                repo_url=repo_url, 
-                token="DUMMY_INSTALLATION_TOKEN",
-                # Pass the necessary PR context for the worker to report results
+                repo_url=repo_url,
                 pr_context={
                     'owner': payload['repository']['owner']['login'],
                     'repo': payload['repository']['name'],
-                    'pr_number': payload['pull_request']['number']
+                    'pr_number': payload['pull_request']['number'],
+                    'installation_id': payload['installation']['id']
                 }
             )
             
