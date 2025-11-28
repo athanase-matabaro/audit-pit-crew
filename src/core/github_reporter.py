@@ -21,17 +21,26 @@ class GitHubReporter:
         }
         self.run_tag = "<!-- audit-pit-crew-report-v1 -->"
 
-    def _format_report(self, issues: List[Dict[str, Any]]) -> str:
+    def _format_report(self, issues: List[Dict[str, Any]], baseline_issue_count: int) -> str:
         """
-        Formats the list of issues into a comprehensive Markdown report.
+        Formats the list of new issues into a comprehensive Markdown report.
         """
-        # If the list is empty (Clean Scan), return a success message
         if not issues:
-            return f"{self.run_tag}\n\n## 🛡️ Audit Pit-Crew Report\n\n✅ **Scan Complete:** No Critical or High severity issues found. Great job!"
+            return (
+                f"{self.run_tag}\n\n## 🛡️ Audit Pit-Crew Report\n\n"
+                f"✅ **Scan Complete:** No new security issues were introduced in this PR.\n\n"
+                f"ℹ️ _The baseline for the `main` branch contains **{baseline_issue_count}** existing issue(s)._"
+            )
 
-        report = f"{self.run_tag}\n\n## 🚨 Audit Pit-Crew Security Report ({len(issues)} Findings)"
+        report_header = (
+            f"{self.run_tag}\n\n"
+            f"## 🚨 Audit Pit-Crew Security Report\n\n"
+            f"Found **{len(issues)}** new issue(s) in this PR. "
+            f"The `main` branch baseline has **{baseline_issue_count}** existing issue(s)."
+        )
+
+        report = report_header
         
-        # Sort issues by severity (High first)
         severity_order = {'High': 3, 'Medium': 2, 'Low': 1}
         issues.sort(key=lambda x: severity_order.get(x['severity'], 0), reverse=True)
 
@@ -47,7 +56,7 @@ class GitHubReporter:
 > {issue['description'].strip().splitlines()[0]}
 <details>
 <summary>Click for Full Description</summary>
-\n
+
 ```text
 {issue['description'].strip()}
 ```
@@ -55,11 +64,12 @@ class GitHubReporter:
 """
         return report
 
-    def post_report(self, issues: List[Dict[str, Any]]):
+    def post_report(self, issues: List[Dict[str, Any]], baseline_issue_count: int = 0):
         """
-        Formats the issues and posts the comment to GitHub.
+        Formats the report and posts it as a comment to the GitHub Pull Request.
+        Issues provided should ONLY be the NEW issues that passed filtering.
         """
-        markdown_body = self._format_report(issues)
+        markdown_body = self._format_report(issues, baseline_issue_count)
         
         data = {"body": markdown_body}
 
@@ -75,4 +85,3 @@ class GitHubReporter:
         except Exception as e:
             logger.error(f"❌ An unexpected error occurred: {e}")
             raise e
-        

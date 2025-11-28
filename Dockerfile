@@ -37,6 +37,9 @@ RUN solc-select install 0.8.20 0.8.0 0.7.6 0.6.12 0.5.17
 RUN solc-select use 0.8.20
 # --- END TOOLING ---
 
+# Install PyYAML for config file parsing (temporary)
+RUN pip install pyyaml
+
 # Copy the entire application source code
 COPY . .
 
