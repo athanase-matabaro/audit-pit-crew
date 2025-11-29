@@ -1,60 +1,83 @@
-import requests
-import logging
-from typing import List
+import httpx
+from typing import Optional, Dict, Any
 
-logger = logging.getLogger(__name__)
 
 class GitHubClient:
     """
-    Client for non-authentication related GitHub API interactions, 
-    such as fetching PR details or diffs.
+    An asynchronous client for interacting with the GitHub API.
+
+    This client is a wrapper around `httpx.AsyncClient` and is designed to
+    handle authentication and make requests to the GitHub API endpoints.
+
+    Attributes:
+        base_url (str): The base URL for the GitHub API.
+        _client (httpx.AsyncClient): The underlying async HTTP client.
     """
 
-    def __init__(self, token: str, owner: str, repo: str, pr_number: int):
-        self.token = token
-        self.base_url = f"https://api.github.com/repos/{owner}/{repo}"
-        self.pr_files_url = f"{self.base_url}/pulls/{pr_number}/files"
-        self.headers = {
-            "Authorization": f"Bearer {self.token}",
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        base_url: str = "https://api.github.com",
+    ):
+        """
+        Initializes the GitHubClient.
+
+        Args:
+            token: An optional GitHub API token for authentication.
+            base_url: The base URL of the GitHub API.
+        """
+        self.base_url = base_url
+        headers = {
             "Accept": "application/vnd.github.v3+json",
         }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
 
-    def get_changed_solidity_files(self) -> List[str]:
+        self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers)
+
+    async def get(self, url: str, **kwargs) -> httpx.Response:
         """
-        Fetches the list of files modified in the current Pull Request and filters 
-        them to return only Solidity files (.sol).
-        
+        Sends a GET request to the specified URL.
+
+        Args:
+            url: The API endpoint to request.
+            **kwargs: Additional arguments to pass to the httpx client.
+
         Returns:
-            A list of file paths relative to the repository root.
+            The `httpx.Response` object.
+
+        Raises:
+            httpx.HTTPStatusError: If the request returns a 4xx or 5xx status code.
         """
-        logger.info(f"🔎 Fetching list of changed files for PR.")
-        
-        all_files = []
-        page = 1
-        
-        # GitHub uses pagination, so we loop until we get an empty response
-        while True:
-            response = requests.get(
-                self.pr_files_url, 
-                headers=self.headers, 
-                params={"page": page, "per_page": 100} # Max page size is 100
-            )
-            response.raise_for_status() # Raises HTTPError for bad status codes (4xx or 5xx)
-            
-            files_page = response.json()
-            if not files_page:
-                break # Exit loop if no more files
-            
-            all_files.extend(files_page)
-            page += 1
+        response = await self._client.get(url, **kwargs)
+        response.raise_for_status()
+        return response
 
-        solidity_files = []
-        for file in all_files:
-            filename = file.get("filename", "")
-            # We only care about files that are added (status 'added') or modified (status 'modified')
-            if filename.endswith(".sol") and file.get("status") in ["added", "modified"]:
-                solidity_files.append(filename)
+    async def post(
+        self, url: str, json: Optional[Dict[str, Any]] = None, **kwargs
+    ) -> httpx.Response:
+        """
+        Sends a POST request to the specified URL.
 
-        logger.info(f"✅ Found {len(solidity_files)} Solidity files in the PR diff.")
-        
-        return solidity_files
+        Args:
+            url: The API endpoint to request.
+            json: The JSON payload to send with the request.
+            **kwargs: Additional arguments to pass to the httpx client.
+
+        Returns:
+            The `httpx.Response` object.
+
+        Raises:
+            httpx.HTTPStatusError: If the request returns a 4xx or 5xx status code.
+        """
+        response = await self._client.post(url, json=json, **kwargs)
+        response.raise_for_status()
+        return response
+
+    async def __aenter__(self):
+        """Enter the async context manager."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit the async context manager and close the client."""
+        await self._client.aclose()

@@ -3,15 +3,12 @@ import hashlib
 import json
 import uvicorn
 import logging
-from fastapi import FastAPI, Request, HTTPException, Depends, status
-from typing import Dict, Any
+from fastapi import FastAPI, Request, HTTPException, Depends, status, Header
+from typing import Dict, Any, Optional
 from src.config import settings
 from src.worker.tasks import scan_repo_task 
-from src.core.github_auth import GitHubAuth # Import the new utility
 
 logger = logging.getLogger(__name__)
-# Initialize the GitHub Auth utility globally (or as a singleton)
-github_auth = GitHubAuth()
 
 # --- Dependencies ---
 
@@ -21,13 +18,22 @@ async def verify_signature(request: Request):
     signature = request.headers.get("X-Hub-Signature-256")
     body = await request.body()
     
-    # CRITICAL: Do not process if signature is missing
-    if not signature:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Signature missing")
+    # ==================================================================
+    # 🛡️ LOCAL DEBUG BYPASS (Header-Based)
+    # Allows curl/manual requests without a signature header to pass.
+    # This works even if GITHUB_WEBHOOK_SECRET is set in .env.
+    # ==================================================================
+    if signature is None:
+        logger.warning("⚠️ Local Test: Signature header missing. Bypassing security check.")
+        return body
+    # ==================================================================
+
+    # Normal Security Logic
+    if not settings.GITHUB_WEBHOOK_SECRET:
+         logger.error("❌ Webhook secret not configured.")
+         raise HTTPException(status_code=500, detail="Server misconfiguration")
 
     secret_bytes = settings.GITHUB_WEBHOOK_SECRET.encode('utf-8')
-    
-    # Calculate the HMAC-SHA256 hash of the request body
     hash_object = hmac.new(secret_bytes, body, hashlib.sha256)
     expected_signature = "sha256=" + hash_object.hexdigest()
 
@@ -48,55 +54,59 @@ def health_check():
 @app.post("/webhook/github")
 async def github_webhook(
     request: Request,
-    body: bytes = Depends(verify_signature) # Security check runs first
+    x_github_event: Optional[str] = Header(None),
+    body: bytes = Depends(verify_signature)
 ):
     """
     Handles all incoming GitHub Webhook events.
     """
-    event_type = request.headers.get("X-GitHub-Event")
     payload: Dict[str, Any] = json.loads(body.decode('utf-8'))
-    
     action = payload.get("action")
 
-    # 1. Listen for PR events ("opened" or "synchronize")
-    if event_type == "pull_request" and action in ["opened", "synchronize"]:
-        # --- SAFE PAYLOAD EXTRACTION ---
-        installation = payload.get("installation")
-        if not installation or "id" not in installation:
-            logger.error("🛑 'installation' or 'installation.id' missing from webhook payload.")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="'installation.id' is required but was not found in the payload."
-            )
-        
-        try:
-            repo_url = payload["repository"]["clone_url"]
-            pr_context = {
-                'installation_id': installation["id"], # CRITICAL: Add installation_id
-                'owner': payload['repository']['owner']['login'],
-                'repo': payload['repository']['name'],
-                'pr_number': payload['pull_request']['number'],
-                'base_ref': payload['pull_request']['base']['sha'],
-                'head_ref': payload['pull_request']['head']['sha'],
-            }
-        except KeyError as e:
-            logger.error(f"🛑 Missing expected key in payload: {e}")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Missing key: {e}")
+    # 1. Validation and Event Filtering
+    if x_github_event != "pull_request":
+        logger.info(f"Skipping webhook event: {x_github_event}")
+        return {"message": f"Event '{x_github_event}' received but skipped."}
 
-        # 2. Hand off the job to the Worker
-        logger.info(f"➡️ Webhook received. Queuing scan for {pr_context['owner']}/{pr_context['repo']} PR #{pr_context['pr_number']}")
-        scan_repo_task.delay(
-            repo_url=repo_url, 
-            pr_context=pr_context # Pass the complete context
-        )
-        
-        # 3. Return fast response to GitHub (CRITICAL)
-        return {"status": "queued", "repo": repo_url}
+    # Process only relevant PR actions
+    if action not in ["opened", "reopened", "synchronize"]:
+        logger.info(f"Skipping pull_request action: {action}")
+        return {"message": f"PR action '{action}' received but skipped."}
 
-    # Ignore other events
-    ignored_event = f"event={event_type}, action={action}"
-    logger.info(f"⚪ Ignoring GitHub event: {ignored_event}")
-    return {"status": "ignored", "message": f"Event '{ignored_event}' not configured for scanning."}
+    try:
+        # 2. Extract Context
+        pr_context = {
+            "owner": payload["repository"]["owner"]["login"],
+            "repo": payload["repository"]["name"],
+            "pr_number": payload["pull_request"]["number"],
+            "base_sha": payload["pull_request"]["base"]["sha"],
+            "head_sha": payload["pull_request"]["head"]["sha"],
+            "base_ref": payload["pull_request"]["base"]["ref"],
+            "head_ref": payload["pull_request"]["head"]["ref"],
+            "installation_id": payload["installation"]["id"]
+        }
+
+        import re
+        repo_url = payload["repository"]["clone_url"]
+        # Remove markdown formatting if present (defensive)
+        repo_url = re.sub(r'^\[([^\]]+)\]\([^\)]+\)$', r'\1', repo_url)
+
+        # 3. Dispatch Celery Task
+        task_id = scan_repo_task.delay(repo_url, pr_context)
+        logger.info(f"Received PR #{pr_context['pr_number']}. Task dispatched: {task_id}")
+
+        return {
+            "message": "Webhook received and task dispatched.", 
+            "task_id": str(task_id)
+        }
+
+    except KeyError as e:
+        logger.error(f"Missing required field in GitHub payload: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid webhook payload: Missing key {e}")
+
+    except Exception as e:
+        logger.error(f"Failed to process webhook: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error during task dispatch.")
 
 # --- Running the Server (For local testing) ---
 

@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import subprocess
 import logging
+import fnmatch
 from typing import Optional, List
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,10 @@ class GitManager:
             raise Exception(f"Git command failed: {error_output}")
         except subprocess.TimeoutExpired:
             logger.error(f"❌ Git command timed out: {' '.join(cmd)}")
-            raise Exception("Git command timed out")
+            raise Exception(f"Git command timed out: {' '.join(cmd)}")
+        except Exception as e:
+            logger.error(f"❌ An unexpected error occurred during git execution: {e}")
+            raise Exception(f"An unexpected error occurred: {e}")
 
     def clone_repo(self, workspace: str, repo_url: str, token: Optional[str] = None, shallow_clone: bool = True):
         """
@@ -54,29 +58,60 @@ class GitManager:
         (False) or only the latest commit (True, which is the default for performance).
         """
         final_url = repo_url
-        is_local_path = not (repo_url.startswith("http") or repo_url.startswith("git"))
+        
+        # --- START FIX: URL SANITIZATION (From previous step) ---
+        if final_url.startswith('['):
+            logger.warning(f"⚠️ Detected corrupted Markdown link in repo_url: {final_url}. Sanitizing.")
+            final_url = final_url.strip('[]() ')
+            
+            if '](' in final_url:
+                final_url = final_url.split('](')[0]
+            
+            logger.info(f"✅ Sanitized repo_url to: {final_url}")
+        # --- END FIX: URL SANITIZATION ---
+
+        # Check if this is a local file path (not starting with http or git protocol)
+        is_local_path = not (final_url.startswith("http") or final_url.startswith("git"))
 
         if is_local_path:
+            # For local paths, clone directly without authentication.
             logger.info("⬇️ Cloning local repository (full history)...")
-            cmd = ["git", "clone", final_url, "."]
-        
-        else:
-            if token and "DUMMY_INSTALLATION_TOKEN" not in token:
-                # Format: https://x-access-token:TOKEN@github.com/user/repo
-                clean_url = repo_url.replace("https://", "")
-                final_url = f"https://x-access-token:{token}@{clean_url}"
+            clone_args = []
             
-            cmd = ["git", "clone", final_url, "."]
-
-            if shallow_clone:
-                cmd.insert(2, "--depth")
-                cmd.insert(3, "1")
-                logger.info(f"⬇️ Cloning remote repository (shallow depth 1): {final_url.split('@')[-1]}")
+        else:
+            # For remote URLs, inject the token for authentication if available.
+            auth_url = final_url
+            if token and "github.com" in final_url:
+                # Inject the token for authenticated cloning over HTTPS
+                protocol_end_index = final_url.find("://")
+                if protocol_end_index != -1:
+                    host_path = final_url[protocol_end_index + 3:]
+                    # Format: https://x-access-token:{token}@{host}/{owner}/{repo}.git
+                    auth_url = f"https://x-access-token:{token}@{host_path}"
+                    logger.info(f"⬇️ Cloning remote repository (full history) with token: {host_path}")
+                else:
+                    logger.warning("⚠️ Could not detect protocol, attempting clone without token injection.")
             else:
-                logger.info(f"⬇️ Cloning remote repository (full history): {final_url.split('@')[-1]}")
-        
-        self._execute_git_command(cmd, workspace, timeout=120) 
+                logger.info(f"⬇️ Cloning remote repository (full history): {final_url}")
+            
+            final_url = auth_url
+            
+            # Determine clone depth
+            clone_args = ["--depth", "1"] if shallow_clone else []
+            
+        # The final git command
+        cmd = ["git", "clone"] + clone_args + [final_url, "."]
+        self._execute_git_command(cmd, workspace, timeout=120)
         logger.info("✅ Clone successful.")
+
+    def checkout_ref(self, workspace: str, ref: str):
+        """
+        Checks out a specific branch, tag, or commit SHA.
+        """
+        logger.info(f"🚚 Checking out reference: {ref}")
+        self._execute_git_command(["git", "checkout", ref], workspace, timeout=30)
+        logger.info(f"✅ Checkout of reference '{ref}' successful.")
+
 
     def fetch_base_ref(self, workspace: str, base_ref: str):
         """
@@ -84,51 +119,51 @@ class GitManager:
         into the local repository for differential analysis.
         """
         logger.info(f"⬇️ Fetching base reference: {base_ref}")
-        cmd = ["git", "fetch", "origin", base_ref]
-        self._execute_git_command(cmd, workspace, timeout=30)
+        # Use the helper to execute and handle errors
+        self._execute_git_command(["git", "fetch", "origin", base_ref], workspace, timeout=30)
         logger.info(f"✅ Fetch of base reference '{base_ref}' successful.")
 
-    def checkout_ref(self, workspace: str, ref: str):
-        """
-        Checks out a specific commit SHA or branch name.
-        """
-        logger.info(f"🔄 Checking out reference: {ref}")
-        cmd = ["git", "checkout", ref]
-        self._execute_git_command(cmd, workspace, timeout=30)
-        logger.info(f"✅ Checkout of reference '{ref}' successful.")
-
-    def get_last_commit_hash(self, workspace: str) -> str:
-        """Returns the full commit hash of the current HEAD."""
-        logger.info("🔍 Retrieving last commit hash (HEAD)...")
-        cmd = ["git", "rev-parse", "HEAD"]
-        commit_hash = self._execute_git_command(cmd, workspace)
-        logger.info(f"✅ Found HEAD commit hash: {commit_hash}")
-        return commit_hash
-        
-    def get_changed_solidity_files(self, workspace: str, base_ref: str, head_ref: str) -> List[str]:
+    
+    def get_changed_files(self, workspace: str, base_ref: str, head_ref: str, target_extensions: List[str], exclude_patterns: Optional[List[str]] = None) -> List[str]:
         """
         Compares the currently checked-out HEAD (head_ref) against a base_ref
-        and returns a list of absolute paths to changed files ending with a .sol extension.
+        and returns a list of absolute paths to changed files matching the target extensions,
+        while filtering out any files matching the exclusion patterns.
         """
-        # head_ref is provided for logging clarity, but the diff is against HEAD.
         logger.info(f"🆚 Determining changed files between base '{base_ref}' and HEAD ('{head_ref}')...")
         
         # Use git diff --name-only to find files changed between the base and HEAD.
-        # HEAD is used because head_ref has already been checked out.
         cmd = ["git", "diff", "--name-only", base_ref, "HEAD"]
         
         output = self._execute_git_command(cmd, workspace, timeout=30)
         
         all_changed_files = output.splitlines() if output else []
+
+        # Proactively filter out known artifacts that are not part of the source code
+        if "dummy.sol" in all_changed_files:
+            logger.warning("Found and removing 'dummy.sol' from changed files list.")
+            all_changed_files = [f for f in all_changed_files if f != "dummy.sol"]
+
         logger.info(f"Found {len(all_changed_files)} total changed files before filtering.")
 
-        solidity_files = [
-            os.path.join(workspace, f) for f in all_changed_files 
-            if f.endswith('.sol') 
-        ]
+        exclude_patterns = exclude_patterns or []
 
-        logger.info(f"✅ Found {len(solidity_files)} changed Solidity files.")
-        return solidity_files
+        # Filter files based on two criteria:
+        # 1. Must match one of the target_extensions.
+        # 2. Must NOT match any of the exclude_patterns.
+        filtered_files = []
+        for f_path in all_changed_files:
+            # Check for inclusion based on extension
+            is_target = any(f_path.endswith(ext) for ext in target_extensions)
+            
+            # Check for exclusion based on pattern matching
+            is_excluded = any(fnmatch.fnmatch(f_path, pattern) for pattern in exclude_patterns)
+            
+            if is_target and not is_excluded:
+                filtered_files.append(os.path.join(workspace, f_path))
+
+        logger.info(f"✅ Found {len(filtered_files)} changed files after applying extensions ({target_extensions}) and exclusions.")
+        return filtered_files
 
     def remove_workspace(self, workspace: str):
         """

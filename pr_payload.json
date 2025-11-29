@@ -1,0 +1,24 @@
+{
+  "action": "synchronize",
+  "pull_request": {
+    "number": 10,
+    "base": {
+      "ref": "main",
+      "sha": "88245715a2f1692b00b693e1f7c3e0f839784b21"
+    },
+    "head": {
+      "ref": "feat/my-change",
+      "sha": "3eb6108f24f3518a68818eb89e7dbf1131939147"
+    }
+  },
+  "repository": {
+    "name": "audit-pit-crew",
+    "clone_url": "[https://github.com/athanase-matabaro/audit-pit-crew.git](https://github.com/athanase-matabaro/audit-pit-crew.git)",
+    "owner": {
+      "login": "athanase-matabaro"
+    }
+  },
+  "installation": {
+    "id": 96668963
+  }
+}
