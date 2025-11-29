@@ -85,3 +85,35 @@ class GitHubReporter:
         except Exception as e:
             logger.error(f"❌ An unexpected error occurred: {e}")
             raise e
+
+    def post_error_report(self, error_message: str):
+        """
+        Posts a formatted error report to the GitHub Pull Request.
+        """
+        body = (
+            f"{self.run_tag}\n\n"
+            f"## ❌ Audit Pit-Crew Scan Failed\n\n"
+            f"The security scan could not be completed due to a critical error.\n\n"
+            f"<details>\n<summary>Error Details</summary>\n\n"
+            f"```\n{error_message}\n```\n\n"
+            f"</details>\n\n"
+            f"Please check the CI/CD logs for more information."
+        )
+        self.post_comment(body)
+
+    def post_comment(self, body: str):
+        """
+        Posts a raw string as a comment to the GitHub Pull Request.
+        This is a generic method for posting any content.
+        """
+        data = {"body": body}
+        try:
+            response = requests.post(self.base_url, headers=self.headers, json=data)
+            response.raise_for_status()
+            logger.info(f"✅ Comment posted successfully to {self.base_url}")
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"❌ Failed to post comment. HTTP Error: {e.response.status_code}")
+            logger.error(f"GitHub API response: {e.response.text}")
+        except Exception as e:
+            logger.error(f"❌ An unexpected error occurred while posting comment: {e}")
