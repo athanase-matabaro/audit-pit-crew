@@ -21,6 +21,14 @@ class MythrilExecutionError(ToolExecutionError):
     """Custom exception for Mythril execution failures."""
     pass
 
+class OyenteExecutionError(ToolExecutionError):
+    """Custom exception for Oyente execution failures."""
+    pass
+
+class AderynExecutionError(ToolExecutionError):
+    """Custom exception for Aderyn execution failures."""
+    pass
+
 
 class BaseScanner(ABC):
     """
