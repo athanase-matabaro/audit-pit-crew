@@ -160,11 +160,25 @@ class GitManager:
         """
         Fetches the specific base branch/commit (e.g., 'main' or a base commit SHA)
         into the local repository for differential analysis.
+        
+        This method is resilient to cases where base_ref might be:
+        - A branch name (e.g., 'main', 'rf-multitool-scanning-revision')
+        - A commit SHA
+        - A tag
+        
+        If the base_ref is not found in origin, it assumes it's a commit SHA
+        and proceeds without fetching.
         """
         logger.info(f"⬇️ Fetching base reference: {base_ref}")
-        # Use the helper to execute and handle errors
-        self._execute_git_command(["git", "fetch", "origin", base_ref], workspace, timeout=30)
-        logger.info(f"✅ Fetch of base reference '{base_ref}' successful.")
+        try:
+            # Try to fetch the base_ref from origin (handles branches, tags, etc.)
+            self._execute_git_command(["git", "fetch", "origin", base_ref], workspace, timeout=30)
+            logger.info(f"✅ Fetch of base reference '{base_ref}' successful.")
+        except Exception as e:
+            # If fetch fails, assume it's a commit SHA and it's already available locally
+            # or it will fail later during diff, which is fine
+            logger.warning(f"⚠️ Could not fetch base reference '{base_ref}' from origin: {str(e)[:100]}")
+            logger.info(f"ℹ️ Assuming '{base_ref}' is a commit SHA or already available locally.")
 
     
     def get_changed_files(self, workspace: str, base_ref: str, head_ref: str, target_extensions: List[str], exclude_patterns: Optional[List[str]] = None) -> List[str]:
@@ -237,9 +251,26 @@ class GitManager:
         logger.info(f"📋 Using contracts_path: {config.scan.contracts_path}")
         logger.info(f"📂 Repository root: {repo_dir}")
         
+        # First, try to resolve base_ref to a valid reference
+        # This handles cases where base_ref is a branch that needs to be fetched as origin/base_ref
+        resolved_base_ref = base_ref
+        try:
+            # Check if base_ref exists locally
+            self._execute_git_command(["git", "rev-parse", resolved_base_ref], repo_dir, timeout=10)
+        except Exception:
+            # If not found, try origin/base_ref (for remote branches)
+            try:
+                logger.info(f"ℹ️ Base reference '{base_ref}' not found locally, trying 'origin/{base_ref}'...")
+                self._execute_git_command(["git", "rev-parse", f"origin/{base_ref}"], repo_dir, timeout=10)
+                resolved_base_ref = f"origin/{base_ref}"
+                logger.info(f"✅ Resolved base reference to: {resolved_base_ref}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not resolve base reference: {e}")
+                # Continue anyway - git diff will fail with a clearer error if truly invalid
+        
         # Use git diff --name-only to find files changed between the base and HEAD
         # Run git commands from the actual repo_dir, not the workspace
-        cmd = ["git", "diff", "--name-only", base_ref, "HEAD"]
+        cmd = ["git", "diff", "--name-only", resolved_base_ref, "HEAD"]
         output = self._execute_git_command(cmd, repo_dir, timeout=30)
         
         all_changed_files = output.splitlines() if output else []

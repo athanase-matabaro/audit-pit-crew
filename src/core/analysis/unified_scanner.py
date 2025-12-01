@@ -1,9 +1,14 @@
 import logging
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
-from src.core.analysis.base_scanner import BaseScanner, SlitherExecutionError, MythrilExecutionError
+from src.core.analysis.base_scanner import (
+    BaseScanner, SlitherExecutionError, MythrilExecutionError,
+    OyenteExecutionError, AderynExecutionError
+)
 from src.core.analysis.slither_scanner import SlitherScanner
 from src.core.analysis.mythril_scanner import MythrilScanner
+from src.core.analysis.oyente_scanner import OyenteScanner
+from src.core.analysis.aderyn_scanner import AderynScanner
 
 if TYPE_CHECKING:
     from src.core.config import AuditConfig
@@ -23,6 +28,8 @@ class UnifiedScanner:
         self.scanners = [
             SlitherScanner(),
             MythrilScanner(),
+            OyenteScanner(),
+            AderynScanner(),
         ]
         logger.info(f"📊 UnifiedScanner initialized with {len(self.scanners)} tool(s).")
 
@@ -58,7 +65,7 @@ class UnifiedScanner:
                     else:
                         logger.debug(f"UnifiedScanner: Deduplicating issue with fingerprint: {fingerprint}")
 
-            except (SlitherExecutionError, MythrilExecutionError) as e:
+            except (SlitherExecutionError, MythrilExecutionError, OyenteExecutionError, AderynExecutionError) as e:
                 logger.error(f"⚠️ {scanner.TOOL_NAME} scan failed: {e}")
                 # Continue with other scanners
             except Exception as e:
