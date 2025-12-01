@@ -10,8 +10,12 @@ WORKDIR $APP_HOME
 
 # Install system dependencies needed for git (for cloning) and build tools
 RUN apt-get update \
-    && apt-get install -y git build-essential \
+    && apt-get install -y git build-essential curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Rust and Cargo
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy all configuration files needed for installation
 COPY pyproject.toml .
@@ -25,6 +29,9 @@ RUN pip install slither-analyzer crytic-compile
 
 # 1b. Install Mythril for multi-tool analysis.
 RUN pip install mythril
+
+# 1c. Install Aderyn for multi-tool analysis.
+RUN cargo install aderyn
 
 # 2. Install solc-select.
 RUN pip install solc-select
