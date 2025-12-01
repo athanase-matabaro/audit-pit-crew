@@ -6,10 +6,10 @@ from typing import Dict, Any, List
 from celery import shared_task
 from src.worker.celery_app import celery_app
 from src.core.git_manager import GitManager
-from src.core.analysis.scanner import SlitherScanner, SlitherExecutionError
+from src.core.analysis.scanner import UnifiedScanner, ToolExecutionError
 from src.core.github_reporter import GitHubReporter
 from src.core.github_auth import GitHubAuth
-from src.core.config import AuditConfig
+from src.core.config import AuditConfigManager
 from src.core.redis_client import RedisClient
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
     # Initialize tools
     auth = GitHubAuth()
     git = GitManager()
-    scanner = SlitherScanner()
+    scanner = UnifiedScanner()
     redis_client = RedisClient()
     workspace = None
     
@@ -49,6 +49,7 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
         logger.info(f"🔑 Successfully fetched installation token for ID {installation_id}.")
         
         workspace = git.create_workspace()
+        repo_dir = None
 
         if pr_context:
             # --- DIFFERENTIAL SCAN (PR) ---
@@ -63,25 +64,28 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                 return {"status": "error", "message": "Missing essential PR context"}
 
             git.clone_repo(workspace, repo_url, token, shallow_clone=False)
-            git.fetch_base_ref(workspace, base_ref)
-            git.checkout_ref(workspace, head_sha)
             
-            audit_config = AuditConfig(workspace)
+            # Detect the actual repository root directory
+            repo_dir = git.get_repo_dir(workspace)
             
-            changed_solidity_files = git.get_changed_files(
-                workspace, 
+            git.fetch_base_ref(repo_dir, base_ref)
+            git.checkout_ref(repo_dir, head_sha)
+            
+            audit_config = AuditConfigManager.load_config(repo_dir)
+            
+            changed_solidity_files = git.get_changed_solidity_files(
+                repo_dir, 
                 base_ref, 
-                head_sha, 
-                target_extensions=audit_config.get_target_extensions(),
-                exclude_patterns=audit_config.get_exclude_patterns()
+                head_sha,
+                config=audit_config
             )
             
             if not changed_solidity_files:
                 logger.info("ℹ️ No target files changed in PR based on config. Skipping scan.")
                 return {"status": "skipped", "message": "No target files changed"}
 
-            logger.info(f"🔍 Starting Slither scan on: {workspace}")
-            pr_issues = scanner.run(workspace, files=changed_solidity_files, config=audit_config)
+            logger.info(f"🔍 Starting security scan on: {repo_dir}")
+            pr_issues = scanner.run(repo_dir, files=changed_solidity_files, config=audit_config.scan if audit_config else None)
 
             baseline_key = f"{pr_owner}:{pr_repo}"
             baseline_issues = redis_client.get_baseline_issues(baseline_key)
@@ -105,11 +109,14 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
         else:
             # --- BASELINE SCAN (MAIN BRANCH) ---
             logger.info("⚙️ Running baseline scan for main branch...")
-            git.clone_repo(workspace, repo_url, token, shallow_clone=True) 
+            git.clone_repo(workspace, repo_url, token, shallow_clone=True)
             
-            audit_config = AuditConfig(workspace)
+            # Detect the actual repository root directory
+            repo_dir = git.get_repo_dir(workspace)
             
-            baseline_issues = scanner.run(workspace, config=audit_config)
+            audit_config = AuditConfigManager.load_config(repo_dir)
+            
+            baseline_issues = scanner.run(repo_dir, config=audit_config.scan if audit_config else None)
             
             if pr_owner and pr_repo:
                 baseline_key = f"{pr_owner}:{pr_repo}"
@@ -120,8 +127,8 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
 
             return {"status": "success", "baseline_issues_saved": len(baseline_issues)}
 
-    except SlitherExecutionError as e:
-        logger.error(f"⚔️ Slither scan failed during task {self.request.id}: {e}", exc_info=True)
+    except ToolExecutionError as e:
+        logger.error(f"⚔️ Security scan failed during task {self.request.id}: {e}", exc_info=True)
         if pr_context and pr_owner and pr_repo and token:
             try:
                 reporter = GitHubReporter(
@@ -131,10 +138,10 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                     pr_number=pr_context['pr_number']
                 )
                 reporter.post_error_report(str(e))
-                logger.info("✅ Posted Slither failure report to GitHub.")
+                logger.info("✅ Posted security scan failure report to GitHub.")
             except Exception as post_e:
-                logger.error(f"❌ Failed to post error report to GitHub during Slither failure handling: {post_e}")
-        # Re-raise to mark the task as FAILED. Do not retry, as Slither errors are likely deterministic.
+                logger.error(f"❌ Failed to post error report to GitHub during security scan failure handling: {post_e}")
+        # Re-raise to mark the task as FAILED. Do not retry, as tool errors are likely deterministic.
         raise e
 
     except Exception as e:

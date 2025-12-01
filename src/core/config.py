@@ -1,61 +1,84 @@
 import os
-from typing import List, Dict, Any
+import logging
+from typing import List, Literal, Optional
 import yaml
+from pydantic import BaseModel, Field, ValidationError
 
-class AuditConfig:
-    """
-    Manages audit configuration, loading from a project file if it exists,
-    and providing default values.
-    """
-    def __init__(self, project_path: str):
-        """
-        Initializes the configuration for a given project path.
 
-        Args:
-            project_path: The root path of the project being audited.
-        """
-        self.project_path = project_path
-        self.config_file = os.path.join(project_path, 'audit-pit-crew.yml')
-        self.config = self._load_config()
+logger = logging.getLogger(__name__)
 
-    def _load_config(self) -> Dict[str, Any]:
-        """
-        Loads configuration from `audit-pit-crew.yml` if it exists.
-        Returns an empty dict if the file is not found.
-        """
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r') as f:
-                    return yaml.safe_load(f) or {}
-            except (IOError, yaml.YAMLError):
-                # In case of file read error or parsing error, default to empty config
-                return {}
-        return {}
+# Define the severity levels
+Severity = Literal["Low", "Medium", "High", "Critical"]
 
-    def get_target_extensions(self) -> List[str]:
-        """
-        Returns the list of file extensions to target for scanning.
-        Defaults to ['.sol'] if not specified in the config file.
-        """
-        scanner_config = self.config.get('scanner', {})
-        return scanner_config.get('target_extensions', ['.sol'])
 
-    def get_exclude_patterns(self) -> List[str]:
-        """
-        Returns the list of file/directory patterns to exclude from scanning.
-        Defaults to an empty list. It can include contract names, file paths,
-        or directories. Standard unix glob patterns are supported.
-        
-        Example patterns: 
-        - `contracts/mocks/*`
-        - `*Test.sol`
-        """
-        scanner_config = self.config.get('scanner', {})
-        return scanner_config.get('exclude', [])
+class ScanConfig(BaseModel):
+    """Configuration for the scan behavior."""
+    contracts_path: str = Field(default=".", description="Root path for Solidity source files")
+    ignore_paths: List[str] = Field(
+        default_factory=lambda: ["node_modules/**", "test/**"],
+        description="Glob patterns to exclude from scanning"
+    )
+    min_severity: Severity = Field(default="Low", description="Minimum severity to report")
 
     def get_min_severity(self) -> str:
+        """Returns the minimum severity level as a string."""
+        return self.min_severity
+
+
+class AuditConfig(BaseModel):
+    """Root configuration object."""
+    scan: ScanConfig = Field(default_factory=ScanConfig)
+
+
+class AuditConfigManager:
+    """Manages loading and parsing of audit-pit-crew.yml configuration files."""
+    
+    CONFIG_FILE_NAME = "audit-pit-crew.yml"
+
+    @staticmethod
+    def load_config(workspace: str) -> AuditConfig:
         """
-        Returns the minimum severity level to report from the config, defaulting to 'Low'.
+        Loads the audit-pit-crew.yml configuration from the workspace.
+        Falls back to default configuration if file is missing or invalid.
+        
+        Args:
+            workspace: The repository workspace directory path
+            
+        Returns:
+            AuditConfig object with user config or defaults
         """
-        scanner_config = self.config.get('scanner', {})
-        return scanner_config.get('min_severity', 'Low')
+        config_path = os.path.join(workspace, AuditConfigManager.CONFIG_FILE_NAME)
+        
+        if not os.path.exists(config_path):
+            logger.info(f"ℹ️ Config file not found at {config_path}. Using default configuration.")
+            return AuditConfig()
+        
+        try:
+            logger.info(f"📖 Loading configuration from {config_path}")
+            with open(config_path, "r") as f:
+                config_data = yaml.safe_load(f)
+            
+            if not config_data:
+                logger.warning(f"⚠️ Config file {config_path} is empty. Using default configuration.")
+                return AuditConfig()
+            
+            # Parse and validate the configuration
+            audit_config = AuditConfig.parse_obj(config_data)
+            logger.info(
+                f"✅ Configuration loaded successfully. "
+                f"Contracts path: {audit_config.scan.contracts_path}, "
+                f"Min severity: {audit_config.scan.min_severity}, "
+                f"Ignore patterns: {len(audit_config.scan.ignore_paths)} pattern(s)"
+            )
+            return audit_config
+            
+        except yaml.YAMLError as e:
+            logger.error(f"❌ Failed to parse YAML config file: {e}. Using default configuration.")
+            return AuditConfig()
+        except ValidationError as e:
+            logger.error(f"❌ Configuration validation failed: {e}. Using default configuration.")
+            return AuditConfig()
+        except Exception as e:
+            logger.error(f"❌ Unexpected error loading config: {e}. Using default configuration.")
+            return AuditConfig()
+
