@@ -40,8 +40,10 @@ class MythrilScanner(BaseScanner):
             logger.info("⚙️ Mythril: Running full scan on repository root.")
             cmd.append(".")
 
-        # Append common flags (--max-depth 0 for performance)
-        cmd.extend(["--max-depth", "0", "--json"])
+        # Append common flags (--max-depth 3 for better vulnerability detection)
+        # Higher depth = more thorough analysis but slower execution
+        # --max-depth 3 = ~30 seconds per scan (good balance)
+        cmd.extend(["--max-depth", "3", "--json"])
 
         logger.info(f"Executing Mythril command: {' '.join(cmd)}")
 
