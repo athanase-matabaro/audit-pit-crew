@@ -23,6 +23,9 @@ RUN pip install setuptools wheel build
 # 1. Install Slither and its core dependencies.
 RUN pip install slither-analyzer crytic-compile
 
+# 1b. Install Mythril for multi-tool analysis.
+RUN pip install mythril
+
 # 2. Install solc-select.
 RUN pip install solc-select
 

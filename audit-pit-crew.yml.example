@@ -1,0 +1,25 @@
+# audit-pit-crew.yml
+# Project-specific configuration for audit-pit-crew security scanner
+
+scan:
+  # Objective B: Defines the root path for all Solidity source files
+  # Used by GitManager to filter which files are scanned
+  # Relative to repository root
+  # Default: "."
+  contracts_path: "contracts/"
+
+  # Objective C: List of file/folder glob patterns to completely exclude from scanning
+  # Paths can be relative to repository root or contracts_path
+  # Default: ["node_modules/**", "test/**"]
+  ignore_paths:
+    - "node_modules/**"      # NPM dependencies
+    - "test/**"              # Test files
+    - ".git/**"              # Git metadata
+    - "*.pem"                # Private key files
+    - "dist/**"              # Build output
+
+  # Objective C: Minimum severity of issues to report in GitHub comments
+  # Must be one of: "Low", "Medium", "High", "Critical"
+  # Issues below this severity level will be filtered out
+  # Default: "Low"
+  min_severity: "Medium"

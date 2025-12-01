@@ -4,7 +4,10 @@ import tempfile
 import subprocess
 import logging
 import fnmatch
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.config import AuditConfig
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,46 @@ class GitManager:
         workspace = tempfile.mkdtemp(prefix="audit_pit_")
         logger.info(f"📂 Created workspace: {workspace}")
         return workspace
+
+    def get_repo_dir(self, workspace: str) -> str:
+        """
+        Detects the actual repository root directory within the workspace.
+        
+        After cloning, the repo might be in:
+        - workspace/.  (if cloned with "." as target)
+        - workspace/repo-name/  (if cloned with repo name)
+        
+        This method finds the directory containing .git
+        
+        Args:
+            workspace: The workspace directory where the repo was cloned
+            
+        Returns:
+            Absolute path to the repository root (containing .git)
+            
+        Raises:
+            Exception if no .git directory is found
+        """
+        # First, check if workspace itself is the repo root
+        if os.path.isdir(os.path.join(workspace, ".git")):
+            logger.info(f"✅ Repository root detected at workspace: {workspace}")
+            return workspace
+        
+        # Otherwise, check immediate subdirectories
+        try:
+            entries = os.listdir(workspace)
+            for entry in entries:
+                potential_repo = os.path.join(workspace, entry)
+                if os.path.isdir(potential_repo) and os.path.isdir(os.path.join(potential_repo, ".git")):
+                    logger.info(f"✅ Repository root detected at subdirectory: {potential_repo}")
+                    return potential_repo
+        except OSError as e:
+            logger.error(f"❌ Error scanning workspace for repo root: {e}")
+        
+        # If no .git found, raise an error
+        error_msg = f"Repository root (.git directory) not found in workspace: {workspace}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
 
     def _execute_git_command(self, cmd: list, workspace: str, timeout: int = 60) -> str:
         """Helper to execute a git command, handle errors, and return stdout."""
@@ -163,6 +206,83 @@ class GitManager:
                 filtered_files.append(os.path.join(workspace, f_path))
 
         logger.info(f"✅ Found {len(filtered_files)} changed files after applying extensions ({target_extensions}) and exclusions.")
+        return filtered_files
+
+    def get_changed_solidity_files(
+        self, 
+        repo_dir: str,
+        base_ref: str, 
+        head_ref: str,
+        config: Optional['AuditConfig'] = None
+    ) -> List[str]:
+        """
+        Gets changed Solidity files (.sol) between base_ref and head_ref,
+        applying contracts_path and ignore_paths filters from the config.
+        
+        Args:
+            repo_dir: Actual repository root directory (containing .git)
+            base_ref: Base reference (branch/commit) to compare against
+            head_ref: Head reference (branch/commit) to compare to
+            config: AuditConfig object containing filtering rules
+            
+        Returns:
+            List of absolute paths to changed .sol files matching the config filters
+        """
+        if config is None:
+            # Use default config if none provided
+            from src.core.config import AuditConfig
+            config = AuditConfig()
+        
+        logger.info(f"🆚 Determining changed Solidity files between base '{base_ref}' and HEAD ('{head_ref}')...")
+        logger.info(f"📋 Using contracts_path: {config.scan.contracts_path}")
+        logger.info(f"📂 Repository root: {repo_dir}")
+        
+        # Use git diff --name-only to find files changed between the base and HEAD
+        # Run git commands from the actual repo_dir, not the workspace
+        cmd = ["git", "diff", "--name-only", base_ref, "HEAD"]
+        output = self._execute_git_command(cmd, repo_dir, timeout=30)
+        
+        all_changed_files = output.splitlines() if output else []
+        logger.info(f"Found {len(all_changed_files)} total changed files before filtering.")
+        
+        # Filter files based on:
+        # 1. Must be a .sol file
+        # 2. Must be within contracts_path (or root if contracts_path is ".")
+        # 3. Must NOT match any ignore_paths patterns
+        filtered_files = []
+        
+        for f_path in all_changed_files:
+            # Check if it's a Solidity file
+            if not f_path.endswith('.sol'):
+                continue
+            
+            # Check if it's within the contracts_path
+            contracts_path = config.scan.contracts_path.rstrip('/')
+            
+            if contracts_path != ".":
+                # If contracts_path is specified, ensure file is under that path
+                if not f_path.startswith(contracts_path + "/") and f_path != contracts_path:
+                    continue
+                # Remove the contracts_path prefix for relative matching
+                relative_to_contracts = f_path[len(contracts_path) + 1:] if f_path.startswith(contracts_path + "/") else f_path
+            else:
+                relative_to_contracts = f_path
+            
+            # Check if it matches any ignore patterns
+            is_ignored = any(
+                fnmatch.fnmatch(f_path, pattern) or fnmatch.fnmatch(relative_to_contracts, pattern)
+                for pattern in config.scan.ignore_paths
+            )
+            
+            if not is_ignored:
+                # Build full path using repo_dir (the actual repository root)
+                full_path = os.path.join(repo_dir, f_path)
+                filtered_files.append(full_path)
+        
+        logger.info(
+            f"✅ Found {len(filtered_files)} changed Solidity files after applying config filters "
+            f"(contracts_path: {config.scan.contracts_path}, ignore_paths: {len(config.scan.ignore_paths)} patterns)."
+        )
         return filtered_files
 
     def remove_workspace(self, workspace: str):
