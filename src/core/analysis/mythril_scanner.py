@@ -75,6 +75,10 @@ class MythrilScanner(BaseScanner):
             if not json_output:
                 # Mythril might not find issues, which is okay
                 logger.info("Mythril analysis completed with no JSON output (likely no issues found).")
+                if result.stderr:
+                    logger.debug(f"Mythril stderr: {result.stderr}")
+                if result.returncode != 0 and result.returncode != 1:
+                    logger.debug(f"Mythril return code: {result.returncode}, stdout: {result.stdout[:500]}")
                 return {"issues": []}
 
             logger.info(f"Mythril analysis finished (Exit Code: {result.returncode}). Issues found.")
