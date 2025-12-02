@@ -103,6 +103,10 @@ class MythrilScanner(BaseScanner):
         """
         logger.info(f"🔍 Starting Mythril scan on: {target_path}")
 
+        if files is not None and len(files) == 0:
+            logger.info("⚠️ No files provided for Mythril scan. Skipping.")
+            return []
+
         relative_files = None
         if files:
             relative_files = [os.path.relpath(f, target_path) for f in files]

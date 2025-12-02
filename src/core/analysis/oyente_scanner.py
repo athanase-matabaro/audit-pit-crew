@@ -137,8 +137,12 @@ class OyenteScanner(BaseScanner):
         """
         logger.info("🔍 Starting Oyente scan on: {}".format(target_path))
 
+        if files is not None and len(files) == 0:
+            logger.info("⚠️ No files provided for Oyente scan. Skipping.")
+            return []
+
         # Determine which files to scan
-        if not files:
+        if files is None:
             logger.info("⚙️ Oyente: Running full scan on repository root.")
             # For full scan, find all .sol files
             sol_files = []
@@ -164,7 +168,7 @@ class OyenteScanner(BaseScanner):
             # Verify file exists
             full_path = os.path.join(target_path, file_path)
             if not os.path.isfile(full_path):
-                logger.warning(f"⚠️ File not found (will skip): {full_path}")
+                logger.warning(f"⚠️ File not found (will skip): {full_path} (Exists: {os.path.exists(full_path)})")
                 continue
 
             try:

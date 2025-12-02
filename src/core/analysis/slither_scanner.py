@@ -38,7 +38,7 @@ class SlitherScanner(BaseScanner):
                     existing_files.append(file_path)
                     logger.debug(f"✓ File exists: {full_path}")
                 else:
-                    logger.warning(f"⚠️ File not found (will skip): {full_path}")
+                    logger.warning(f"⚠️ File not found (will skip): {full_path} (Exists: {os.path.exists(full_path)})")
             
             if not existing_files:
                 logger.warning(f"⚠️ No Solidity files found at specified paths. Falling back to full scan.")
@@ -127,6 +127,10 @@ class SlitherScanner(BaseScanner):
                 - Dictionary of log file paths
         """
         logger.info(f"🔍 Starting Slither scan on: {target_path}")
+
+        if files is not None and len(files) == 0:
+            logger.info("⚠️ No files provided for Slither scan. Skipping.")
+            return [], {}
 
         relative_files = None
         if files:
