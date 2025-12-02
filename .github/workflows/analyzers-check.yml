@@ -1,0 +1,33 @@
+name: Analyzer Compatibility Check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  analyzer_check:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Set up Docker BuildX
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build worker image
+      run: docker build . --file infra/docker/worker.Dockerfile --tag audit-pit-worker:latest
+
+    - name: Run analyzer healthcheck
+      run: |
+        docker run --rm audit-pit-worker:latest /usr/local/bin/analyzers_healthcheck.sh
+
+    # This is a placeholder for a small acceptance test
+    # In a real scenario, you would run a test container
+    # against a known vulnerable contract and assert on the output.
+    - name: Run acceptance test (placeholder)
+      run: echo "Acceptance test placeholder passed."

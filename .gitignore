@@ -91,3 +91,5 @@ temp_scan/
 
 # Ignore documentation build
 /docs/_build/
+
+autofix_logs/

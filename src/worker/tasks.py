@@ -2,11 +2,12 @@ import logging
 import json
 import os
 import fnmatch
-from typing import Dict, Any, List 
+from typing import Dict, Any, List, Optional
 from celery import shared_task
 from src.worker.celery_app import celery_app
 from src.core.git_manager import GitManager
 from src.core.analysis.scanner import UnifiedScanner, ToolExecutionError
+from src.core.analysis.base_scanner import BaseScanner
 from src.core.github_reporter import GitHubReporter
 from src.core.github_auth import GitHubAuth
 from src.core.config import AuditConfigManager
@@ -38,6 +39,7 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
     installation_id = pr_context.get("installation_id")
     
     token = None
+    all_log_paths = {}
     
     try:
         # --- 1. Get Authentication & Setup Workspace ---
@@ -46,7 +48,6 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             return {"status": "error", "message": "Missing installation_id"}
 
         token = auth.get_installation_token(installation_id)
-        logger.info(f"🔑 Successfully fetched installation token for ID {installation_id}.")
         
         workspace = git.create_workspace()
         repo_dir = None
@@ -85,13 +86,12 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                 return {"status": "skipped", "message": "No target files changed"}
 
             logger.info(f"🔍 Starting security scan on: {repo_dir}")
-            pr_issues = scanner.run(repo_dir, files=changed_solidity_files, config=audit_config.scan if audit_config else None)
+            pr_issues, all_log_paths = scanner.run(repo_dir, files=changed_solidity_files, config=audit_config.scan if audit_config else None)
 
             baseline_key = f"{pr_owner}:{pr_repo}"
             baseline_issues = redis_client.get_baseline_issues(baseline_key)
             
-            # NOTE: Placeholder diffing logic
-            new_issues = pr_issues
+            new_issues = BaseScanner.diff_issues(pr_issues, baseline_issues)
             
             logger.info(f"✅ Scan complete. Found {len(new_issues)} new issues ({len(pr_issues)} total issues in PR).")
             
@@ -101,7 +101,7 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                 repo_name=pr_repo, 
                 pr_number=pr_context['pr_number']
             )
-            reporter.post_report(new_issues) 
+            reporter.post_report(new_issues, log_paths=all_log_paths) 
             logger.info(f"📤 Successfully posted report for PR #{pr_context['pr_number']}.")
 
             return {"status": "success", "new_issues_found": len(new_issues)}
@@ -116,7 +116,7 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             
             audit_config = AuditConfigManager.load_config(repo_dir)
             
-            baseline_issues = scanner.run(repo_dir, config=audit_config.scan if audit_config else None)
+            baseline_issues, all_log_paths = scanner.run(repo_dir, config=audit_config.scan if audit_config else None)
             
             if pr_owner and pr_repo:
                 baseline_key = f"{pr_owner}:{pr_repo}"
@@ -137,7 +137,7 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                     repo_name=pr_repo, 
                     pr_number=pr_context['pr_number']
                 )
-                reporter.post_error_report(str(e))
+                reporter.post_error_report(str(e), log_paths=all_log_paths)
                 logger.info("✅ Posted security scan failure report to GitHub.")
             except Exception as post_e:
                 logger.error(f"❌ Failed to post error report to GitHub during security scan failure handling: {post_e}")

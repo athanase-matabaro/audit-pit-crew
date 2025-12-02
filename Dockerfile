@@ -1,5 +1,5 @@
 # Use a lean official Python image
-FROM python:3.12-slim
+FROM python:3.10-slim
 
 # Set environment variables for non-interactive commands
 ENV PYTHONUNBUFFERED 1
@@ -10,7 +10,7 @@ WORKDIR $APP_HOME
 
 # Install system dependencies needed for git (for cloning) and build tools
 RUN apt-get update \
-    && apt-get install -y git build-essential curl \
+    && apt-get install -y git build-essential curl python3-dev libssl-dev libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust and Cargo
@@ -25,10 +25,10 @@ RUN pip install setuptools wheel build
 
 # --- SECURITY TOOLING & COMPILER PRE-INSTALL (ROBUST FIX) ---
 # 1. Install Slither and its core dependencies.
-RUN pip install slither-analyzer crytic-compile
+RUN pip install "slither-analyzer==0.11.0" crytic-compile
 
 # 1b. Install Mythril for multi-tool analysis.
-RUN pip install mythril
+RUN pip install "mythril==0.23.0"
 
 # 1c. Install Aderyn for multi-tool analysis.
 RUN cargo install aderyn
@@ -57,6 +57,13 @@ COPY . .
 # The dot '.' refers to the current working directory (/usr/src/app)
 # This command should install everything listed in your pyproject.toml dependencies section.
 RUN pip install .
+
+# Copy and prepare entrypoint and healthcheck scripts
+COPY scripts/analyzers_healthcheck.sh /usr/local/bin/analyzers_healthcheck.sh
+COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/analyzers_healthcheck.sh /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # Set up the default command (needed for the API service, overridden by docker-compose for the worker)
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

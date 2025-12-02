@@ -1,5 +1,6 @@
 import logging
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+import time
+from typing import List, Dict, Any, Optional, TYPE_CHECKING, Tuple
 
 from src.core.analysis.base_scanner import (
     BaseScanner, SlitherExecutionError, MythrilExecutionError,
@@ -33,7 +34,7 @@ class UnifiedScanner:
         ]
         logger.info(f"📊 UnifiedScanner initialized with {len(self.scanners)} tool(s).")
 
-    def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> List[Dict[str, Any]]:
+    def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
         """
         Runs all scanners and aggregates their results into a deduplicated list.
 
@@ -43,18 +44,34 @@ class UnifiedScanner:
             config: Optional ScanConfig object containing filtering rules
 
         Returns:
-            Deduplicated list of issues from all tools
+            A tuple containing:
+                - Deduplicated list of issues from all tools
+                - Dictionary of log file paths for each tool
         """
         logger.info(f"🔄 UnifiedScanner: Starting multi-tool analysis on {target_path}")
 
         all_issues: List[Dict[str, Any]] = []
+        all_log_paths: Dict[str, List[str]] = {}
         seen_fingerprints: set = set()
+        tool_timings: Dict[str, float] = {}
 
         for scanner in self.scanners:
             try:
                 logger.info(f"📌 Running {scanner.TOOL_NAME}...")
-                issues = scanner.run(target_path, files=files, config=config)
-                logger.info(f"✅ {scanner.TOOL_NAME} completed: {len(issues)} issue(s) found.")
+                start_time = time.time()
+                result = scanner.run(target_path, files=files, config=config)
+                elapsed_time = time.time() - start_time
+                tool_timings[scanner.TOOL_NAME] = elapsed_time
+                
+                if isinstance(result, tuple):
+                    issues = result[0]
+                    log_paths = result[1]
+                else:
+                    issues = result
+                    log_paths = {}
+                logger.info(f"✅ {scanner.TOOL_NAME} completed in {elapsed_time:.2f}s: {len(issues)} issue(s) found.")
+
+                all_log_paths.update(log_paths)
 
                 # Deduplicate based on fingerprint
                 for issue in issues:
@@ -72,5 +89,9 @@ class UnifiedScanner:
                 logger.error(f"❌ Unexpected error during {scanner.TOOL_NAME} scan: {e}", exc_info=True)
                 # Continue with other scanners
 
-        logger.info(f"🎯 UnifiedScanner: Completed. Found {len(all_issues)} total unique issues across all tools.")
-        return all_issues
+        # Log timing summary
+        total_time = sum(tool_timings.values())
+        logger.info(f"⏱️ Tool execution times: {', '.join([f'{k}: {v:.2f}s' for k, v in tool_timings.items()])}")
+        logger.info(f"🎯 UnifiedScanner: Completed in {total_time:.2f}s total. Found {len(all_issues)} total unique issues across all tools.")
+        return all_issues, all_log_paths
+

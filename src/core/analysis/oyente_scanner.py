@@ -33,6 +33,41 @@ class OyenteScanner(BaseScanner):
         'note': 'Low',
     }
 
+    import json
+import os
+import logging
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+from src.core.tools.run_tool import run_tool
+from src.core.analysis.base_scanner import BaseScanner, OyenteExecutionError
+
+if TYPE_CHECKING:
+    from src.core.config import AuditConfig
+
+# Configure a logger for this module
+logger = logging.getLogger(__name__)
+
+
+class OyenteScanner(BaseScanner):
+    """
+    Wraps the Oyente CLI tool to scan Solidity files for security vulnerabilities.
+    Oyente performs bytecode-level analysis on compiled smart contracts.
+    """
+
+    TOOL_NAME = "Oyente"
+
+    # Severity mapping from Oyente's native severity levels to standard system levels
+    SEVERITY_MAP = {
+        'critical': 'Critical',
+        'high': 'High',
+        'medium': 'Medium',
+        'warning': 'Medium',
+        'low': 'Low',
+        'informational': 'Low',
+        'info': 'Low',
+        'note': 'Low',
+    }
+
     def _execute_oyente(self, target_path: str, file_path: str) -> Dict[str, Any]:
         """
         Executes the Oyente CLI tool against a single Solidity file.
@@ -54,42 +89,39 @@ class OyenteScanner(BaseScanner):
         logger.info(f"Executing Oyente command: {' '.join(cmd)}")
         logger.info(f"Working directory (cwd): {target_path}")
 
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=target_path,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=300
-            )
+        rc, stdout, stderr, out_path, err_path = run_tool(cmd, cwd=target_path, timeout=300)
 
-            # Try to parse JSON from stdout
-            if result.stdout.strip():
-                try:
-                    json_output = json.loads(result.stdout)
-                    return json_output
-                except json.JSONDecodeError as e:
-                    logger.warning(f"⚠️ Oyente output is not valid JSON: {e}")
-                    logger.debug(f"Oyente stdout: {result.stdout}")
+        logger.info(f"Oyente stdout log: {out_path}")
+        logger.info(f"Oyente stderr log: {err_path}")
 
-            # If no JSON output, return empty results
-            if result.returncode != 0:
-                logger.warning(f"⚠️ Oyente exited with code {result.returncode}")
-                if result.stderr:
-                    logger.debug(f"Oyente stderr: {result.stderr}")
+        if not stdout.strip():
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            if stderr_str.strip():
+                logger.error(f"tool_error: Oyente stdout was empty, but stderr contained: {stderr_str}")
+                raise OyenteExecutionError(f"Oyente Scan Failed. Stderr: {stderr_str}")
+            else:
+                logger.info("tool_no_output: Oyente stdout and stderr were empty. No issues found.")
+                return {"issues": []}
 
-            return {"issues": []}
+        if rc != 0:
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            logger.warning(f"⚠️ Oyente exited with code {rc}")
+            if stderr_str:
+                logger.debug(f"Oyente stderr: {stderr_str}")
 
-        except subprocess.TimeoutExpired:
-            logger.error("❌ Oyente execution timed out.")
-            raise OyenteExecutionError("Oyente Scan Failed. Execution timed out after 300 seconds.")
-        except FileNotFoundError:
-            logger.error("❌ Oyente CLI not found. Is it installed?")
-            raise OyenteExecutionError("Oyente Scan Failed. Oyente CLI not found.")
-        except Exception as e:
-            logger.error(f"❌ Oyente execution failed: {e}")
-            raise OyenteExecutionError(f"Oyente Scan Failed. Details: {str(e)}")
+        if stdout.strip():
+            try:
+                json_output = json.loads(stdout)
+                return json_output
+            except json.JSONDecodeError as e:
+                stderr_str = stderr.decode('utf-8', errors='ignore')
+                logger.warning(f"⚠️ Oyente output is not valid JSON: {e}")
+                logger.debug(f"Oyente stdout: {stdout.decode('utf-8', errors='ignore')}")
+                raise OyenteExecutionError(f"Oyente Scan Failed. Output not valid JSON. Stderr: {stderr_str}")
+
+        return {"issues": []}
+
+
 
     def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> List[Dict[str, Any]]:
         """
@@ -172,8 +204,7 @@ class OyenteScanner(BaseScanner):
         if config and hasattr(config, 'scan') and hasattr(config.scan, 'min_severity'):
             min_severity = config.scan.min_severity
 
-        logger.info(f"🎯 Oyente: Filtering issues with minimum severity: {min_severity}")
+        logger.debug(f"🎯 Oyente: Filtering issues with minimum severity: {min_severity}")
         filtered_issues = self._filter_by_severity(all_issues, min_severity)
-        logger.info(f"Oyente found {len(filtered_issues)} total issues meeting the severity threshold (Min: {min_severity}).")
 
         return filtered_issues

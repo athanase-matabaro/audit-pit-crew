@@ -31,6 +31,39 @@ class AderynScanner(BaseScanner):
         'informational': 'Low',
     }
 
+    import json
+import os
+import logging
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
+
+from src.core.tools.run_tool import run_tool
+from src.core.analysis.base_scanner import BaseScanner, AderynExecutionError
+
+if TYPE_CHECKING:
+    from src.core.config import AuditConfig
+
+# Configure a logger for this module
+logger = logging.getLogger(__name__)
+
+
+class AderynScanner(BaseScanner):
+    """
+    Wraps the Aderyn CLI tool to scan Solidity contracts for security vulnerabilities.
+    Aderyn performs directory-level analysis and outputs a comprehensive JSON report.
+    """
+
+    TOOL_NAME = "Aderyn"
+
+    # Severity mapping from Aderyn's native severity levels to standard system levels
+    SEVERITY_MAP = {
+        'critical': 'Critical',
+        'high': 'High',
+        'medium': 'Medium',
+        'low': 'Low',
+        'info': 'Low',
+        'informational': 'Low',
+    }
+
     def _execute_aderyn(self, target_path: str) -> Dict[str, Any]:
         """
         Executes the Aderyn CLI tool against the entire target directory.
@@ -54,54 +87,52 @@ class AderynScanner(BaseScanner):
         logger.info(f"Executing Aderyn command: {' '.join(cmd)}")
         logger.info(f"Working directory (cwd): {target_path}")
 
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=target_path,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=600  # Aderyn can take longer
-            )
+        rc, stdout, stderr, out_path, err_path = run_tool(cmd, cwd=target_path, timeout=600)
 
-            # Try to parse JSON from stdout
-            if result.stdout.strip():
-                try:
-                    json_output = json.loads(result.stdout)
-                    logger.info("✅ Aderyn analysis finished. JSON output received.")
-                    return json_output
-                except json.JSONDecodeError as e:
-                    logger.warning(f"⚠️ Aderyn stdout is not valid JSON: {e}")
-                    logger.debug(f"Aderyn stdout: {result.stdout[:500]}")
+        logger.info(f"Aderyn stdout log: {out_path}")
+        logger.info(f"Aderyn stderr log: {err_path}")
 
-            # If no JSON output, check if file was created
-            if os.path.exists(output_filepath):
-                try:
-                    with open(output_filepath, 'r') as f:
-                        json_output = json.load(f)
-                    logger.info("✅ Aderyn analysis finished. JSON output read from file.")
-                    return json_output
-                except json.JSONDecodeError as e:
-                    logger.warning(f"⚠️ Aderyn output file is not valid JSON: {e}")
+        if not stdout.strip():
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            if stderr_str.strip():
+                logger.error(f"tool_error: Aderyn stdout was empty, but stderr contained: {stderr_str}")
+                raise AderynExecutionError(f"Aderyn Scan Failed. Stderr: {stderr_str}")
+            else:
+                logger.info("tool_no_output: Aderyn stdout and stderr were empty. No issues found.")
+                return {"issues": []}
 
-            # If no JSON output, return empty results
-            if result.returncode != 0:
-                logger.warning(f"⚠️ Aderyn exited with code {result.returncode}")
-                if result.stderr:
-                    logger.debug(f"Aderyn stderr: {result.stderr}")
+        if rc != 0:
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            logger.error(f"❌ Aderyn exited with code {rc} - Tool execution failed")
+            if stderr_str:
+                logger.error(f"Aderyn stderr: {stderr_str}")
+            raise AderynExecutionError(f"Aderyn tool failed with exit code {rc}. Details: {stderr_str}")
 
-            logger.info("Aderyn analysis completed with no JSON output (likely no issues found).")
-            return {"issues": []}
+        if stdout.strip():
+            try:
+                json_output = json.loads(stdout)
+                logger.info("✅ Aderyn analysis finished. JSON output received.")
+                return json_output
+            except json.JSONDecodeError as e:
+                logger.warning(f"⚠️ Aderyn stdout is not valid JSON: {e}")
+                logger.debug(f"Aderyn stdout: {stdout.decode('utf-8', errors='ignore')[:500]}")
 
-        except subprocess.TimeoutExpired:
-            logger.error("❌ Aderyn execution timed out.")
-            raise AderynExecutionError("Aderyn Scan Failed. Execution timed out after 600 seconds.")
-        except FileNotFoundError:
-            logger.error("❌ Aderyn CLI not found. Is it installed?")
-            raise AderynExecutionError("Aderyn Scan Failed. Aderyn CLI not found.")
-        except Exception as e:
-            logger.error(f"❌ Aderyn execution failed: {e}")
-            raise AderynExecutionError(f"Aderyn Scan Failed. Details: {str(e)}")
+        # If no JSON output, check if file was created
+        if os.path.exists(output_filepath):
+            try:
+                with open(output_filepath, 'r') as f:
+                    json_output = json.load(f)
+                logger.info("✅ Aderyn analysis finished. JSON output read from file.")
+                return json_output
+            except json.JSONDecodeError as e:
+                stderr_str = stderr.decode('utf-8', errors='ignore')
+                logger.warning(f"⚠️ Aderyn output file is not valid JSON: {e}")
+                raise AderynExecutionError(f"Aderyn Scan Failed. Output file not valid JSON. Stderr: {stderr_str}")
+
+        logger.info("Aderyn analysis completed with no JSON output (likely no issues found).")
+        return {"issues": []}
+
+
 
     def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> List[Dict[str, Any]]:
         """
@@ -165,8 +196,7 @@ class AderynScanner(BaseScanner):
         if config and hasattr(config, 'scan') and hasattr(config.scan, 'min_severity'):
             min_severity = config.scan.min_severity
 
-        logger.info(f"🎯 Aderyn: Filtering issues with minimum severity: {min_severity}")
+        logger.debug(f"🎯 Aderyn: Filtering issues with minimum severity: {min_severity}")
         filtered_issues = self._filter_by_severity(all_issues, min_severity)
-        logger.info(f"Aderyn found {len(filtered_issues)} total issues meeting the severity threshold (Min: {min_severity}).")
 
         return filtered_issues

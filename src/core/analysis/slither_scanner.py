@@ -1,9 +1,9 @@
-import subprocess
 import json
 import os
 import logging
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, TYPE_CHECKING, Tuple
 
+from src.core.tools.run_tool import run_tool
 from src.core.analysis.base_scanner import BaseScanner, SlitherExecutionError
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ class SlitherScanner(BaseScanner):
 
     TOOL_NAME = "Slither"
 
-    def _execute_slither(self, target_path: str, relative_files: Optional[List[str]] = None) -> Dict[str, Any]:
+    def _execute_slither(self, target_path: str, relative_files: Optional[List[str]] = None) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
         """
         Executes the slither command and returns the JSON output.
         Raises SlitherExecutionError on failure.
@@ -50,13 +50,16 @@ class SlitherScanner(BaseScanner):
         try:
             solc_version_to_use = "0.8.20"
             logger.info(f"🐍 Attempting to set solc version using 'solc-select use {solc_version_to_use}'...")
-            subprocess.run(
+            rc, _, stderr, _, _ = run_tool(
                 ["solc-select", "use", solc_version_to_use],
-                capture_output=True, text=True, check=True, timeout=60,
-                cwd=target_path
+                cwd=target_path,
+                timeout=60
             )
-            logger.info(f"✅ Successfully set solc version to {solc_version_to_use}.")
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+            if rc == 0:
+                logger.info(f"✅ Successfully set solc version to {solc_version_to_use}.")
+            else:
+                logger.warning(f"⚠️ Could not set solc version via solc-select: {stderr.decode('utf-8', errors='ignore')}")
+        except Exception as e:
             logger.warning(f"⚠️ Could not set solc version via solc-select: {e}")
 
         output_filename = "slither_report.json"
@@ -77,42 +80,38 @@ class SlitherScanner(BaseScanner):
         logger.info(f"Executing Slither command: {' '.join(cmd)}")
         logger.info(f"Working directory (cwd): {target_path}")
 
-        result = subprocess.run(
-            cmd,
-            cwd=target_path,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=300
-        )
+        rc, stdout, stderr, out_path, err_path = run_tool(cmd, cwd=target_path, timeout=300)
+        
+        log_paths = {self.TOOL_NAME: [out_path, err_path]}
 
         # --- Error Handling based on output file ---
         try:
             with open(output_filepath, 'r') as f:
                 json_output = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError) as e:
-            stdout = result.stdout.strip() if result.stdout else ""
-            stderr = result.stderr.strip() if result.stderr else ""
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            stdout_str = stdout.decode('utf-8', errors='ignore')
 
-            logger.error(f"❌ Slither execution failed to produce a valid report file (Exit Code {result.returncode}). Exception: {e}")
-            if stdout:
-                logger.error(f"Slither STDOUT: {stdout}")
-            if stderr:
-                logger.error(f"Slither STDERR: {stderr}")
+            logger.error(f"❌ Slither execution failed to produce a valid report file (Exit Code {rc}). Exception: {e}")
+            if stdout_str:
+                logger.error(f"Slither STDOUT: {stdout_str}")
+            if stderr_str:
+                logger.error(f"Slither STDERR: {stderr_str}")
 
             # Check for file not found errors in stderr
-            if "is not a file or directory" in stderr:
+            if "is not a file or directory" in stderr_str:
                 logger.error(f"❌ Slither could not find specified files. Ensure file paths are correct relative to {target_path}")
                 error_message = f"Slither could not find the specified files. This often indicates file path resolution issues or files that don't exist in the target repository."
             else:
-                error_message = stderr or stdout or f"Slither failed with exit code {result.returncode} and did not produce a valid report file."
+                error_message = stderr_str or stdout_str or f"Slither failed with exit code {rc} and did not produce a valid report file."
             
             raise SlitherExecutionError(f"Slither Scan Failed. Details: {error_message}")
 
-        logger.info(f"Slither analysis finished (Exit Code: {result.returncode}). Report read from {output_filepath}")
-        return json_output
+        logger.info(f"Slither analysis finished (Exit Code: {rc}). Report read from {output_filepath}")
+        
+        return json_output, log_paths
 
-    def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> List[Dict[str, Any]]:
+    def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
         """
         Runs Slither on the target_path. For differential scans, it scans only the changed files.
         Filters issues by minimum severity from the config.
@@ -123,7 +122,9 @@ class SlitherScanner(BaseScanner):
             config: Optional ScanConfig object containing filtering rules (min_severity)
 
         Returns:
-            List of cleaned issue dictionaries, filtered by severity
+            A tuple containing:
+                - List of cleaned issue dictionaries, filtered by severity
+                - Dictionary of log file paths
         """
         logger.info(f"🔍 Starting Slither scan on: {target_path}")
 
@@ -131,17 +132,17 @@ class SlitherScanner(BaseScanner):
         if files:
             relative_files = [os.path.relpath(f, target_path) for f in files]
 
-        raw_output = self._execute_slither(target_path, relative_files=relative_files)
+        raw_output, log_paths = self._execute_slither(target_path, relative_files=relative_files)
 
         # Extract min_severity from config, default to 'Low'
         min_severity = config.get_min_severity() if config else 'Low'
-        logger.info(f"🎯 Slither: Filtering issues with minimum severity: {min_severity}")
+        logger.debug(f"🎯 Slither: Filtering issues with minimum severity: {min_severity}")
 
         clean_issues: List[Dict[str, Any]] = []
 
         if not raw_output.get("success") or "results" not in raw_output or "detectors" not in raw_output["results"]:
             logger.warning(f"Slither output is empty or indicates failure. Raw: {str(raw_output)[:500]}")
-            return []
+            return [], log_paths
 
         for issue in raw_output["results"]["detectors"]:
             severity = issue.get('impact', 'Informational').capitalize()
@@ -168,4 +169,5 @@ class SlitherScanner(BaseScanner):
             })
 
         logger.info(f"Slither found {len(clean_issues)} total issues meeting the severity threshold (Min: {min_severity}).")
-        return clean_issues
+        return clean_issues, log_paths
+
