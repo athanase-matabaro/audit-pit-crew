@@ -1,26 +1,4 @@
-import subprocess
 import json
-import os
-import logging
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
-
-from src.core.analysis.base_scanner import BaseScanner, MythrilExecutionError
-
-if TYPE_CHECKING:
-    from src.core.config import AuditConfig
-
-# Configure a logger for this module
-logger = logging.getLogger(__name__)
-
-
-class MythrilScanner(BaseScanner):
-    """
-    Wraps the Mythril CLI tool for EVM bytecode analysis.
-    """
-
-    TOOL_NAME = "Mythril"
-
-    import json
 import os
 import logging
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
@@ -129,12 +107,7 @@ class MythrilScanner(BaseScanner):
         if files:
             relative_files = [os.path.relpath(f, target_path) for f in files]
 
-        try:
-            raw_output = self._execute_mythril(target_path, relative_files=relative_files)
-        except MythrilExecutionError:
-            # Return empty list if Mythril fails (it's not critical)
-            logger.warning("⚠️ Mythril scan failed, continuing without Mythril results.")
-            return []
+        raw_output = self._execute_mythril(target_path, relative_files=relative_files)
 
         # Extract min_severity from config, default to 'Low'
         min_severity = config.get_min_severity() if config else 'Low'

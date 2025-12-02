@@ -79,10 +79,12 @@ class AderynScanner(BaseScanner):
             AderynExecutionError: If the command fails or returns invalid output
         """
         # Create a temporary output file path
-        output_filepath = os.path.join(target_path, "aderyn_report.json")
+        output_filename = "aderyn_report.json"
+        output_filepath = os.path.join(target_path, output_filename)
 
         # Construct the command
-        cmd = ["aderyn", target_path, "-o", "json"]
+        # Aderyn expects the output file path with -o, not just the format
+        cmd = ["aderyn", target_path, "-o", output_filename]
 
         logger.info(f"Executing Aderyn command: {' '.join(cmd)}")
         logger.info(f"Working directory (cwd): {target_path}")
@@ -117,7 +119,7 @@ class AderynScanner(BaseScanner):
                 logger.warning(f"⚠️ Aderyn stdout is not valid JSON: {e}")
                 logger.debug(f"Aderyn stdout: {stdout.decode('utf-8', errors='ignore')[:500]}")
 
-        # If no JSON output, check if file was created
+        # If no JSON output in stdout, check if file was created
         if os.path.exists(output_filepath):
             try:
                 with open(output_filepath, 'r') as f:
@@ -129,8 +131,13 @@ class AderynScanner(BaseScanner):
                 logger.warning(f"⚠️ Aderyn output file is not valid JSON: {e}")
                 raise AderynExecutionError(f"Aderyn Scan Failed. Output file not valid JSON. Stderr: {stderr_str}")
 
-        logger.info("Aderyn analysis completed with no JSON output (likely no issues found).")
-        return {"issues": []}
+        # If we got here and rc==0 but no output, it might mean no issues or stdout was empty
+        if rc == 0:
+             logger.info("Aderyn analysis completed with no JSON output (likely no issues found).")
+             return {"issues": []}
+        
+        stderr_str = stderr.decode('utf-8', errors='ignore')
+        raise AderynExecutionError(f"Aderyn Scan Failed. No output file created and no stdout. Stderr: {stderr_str}")
 
 
 
@@ -151,45 +158,37 @@ class AderynScanner(BaseScanner):
         if files:
             logger.info(f"📌 Note: Aderyn scans entire directory. Individual file filtering is not applied.")
 
-        try:
-            json_output = self._execute_aderyn(target_path)
+        json_output = self._execute_aderyn(target_path)
 
-            all_issues: List[Dict[str, Any]] = []
+        all_issues: List[Dict[str, Any]] = []
 
-            # Parse Aderyn output and convert to standard format
-            # Aderyn returns issues in a top-level "issues" array
-            issues = json_output.get("issues", [])
+        # Parse Aderyn output and convert to standard format
+        # Aderyn returns issues in a top-level "issues" array
+        issues = json_output.get("issues", [])
 
-            for raw_issue in issues:
-                # Extract file path and make it relative to target_path
-                file_path = raw_issue.get('file', '')
+        for raw_issue in issues:
+            # Extract file path and make it relative to target_path
+            file_path = raw_issue.get('file', '')
 
-                # Ensure file path is relative to target_path
-                if os.path.isabs(file_path):
-                    file_path = os.path.relpath(file_path, target_path)
+            # Ensure file path is relative to target_path
+            if os.path.isabs(file_path):
+                file_path = os.path.relpath(file_path, target_path)
 
-                # Convert Aderyn's format to standard issue dictionary
-                issue = {
-                    'type': raw_issue.get('title', raw_issue.get('name', 'Unknown')),
-                    'severity': self.SEVERITY_MAP.get(
-                        raw_issue.get('severity', 'low').lower(),
-                        'Low'
-                    ),
-                    'confidence': raw_issue.get('confidence', 'Unknown'),
-                    'description': raw_issue.get('description', ''),
-                    'file': file_path,
-                    'line': raw_issue.get('line', 0),
-                    'tool': self.TOOL_NAME,
-                    'raw_data': raw_issue,
-                }
-                all_issues.append(issue)
-
-        except AderynExecutionError as e:
-            logger.error(f"⚠️ Aderyn scan failed: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"❌ Unexpected error during Aderyn scan: {e}", exc_info=True)
-            return []
+            # Convert Aderyn's format to standard issue dictionary
+            issue = {
+                'type': raw_issue.get('title', raw_issue.get('name', 'Unknown')),
+                'severity': self.SEVERITY_MAP.get(
+                    raw_issue.get('severity', 'low').lower(),
+                    'Low'
+                ),
+                'confidence': raw_issue.get('confidence', 'Unknown'),
+                'description': raw_issue.get('description', ''),
+                'file': file_path,
+                'line': raw_issue.get('line', 0),
+                'tool': self.TOOL_NAME,
+                'raw_data': raw_issue,
+            }
+            all_issues.append(issue)
 
         # Apply severity filtering
         min_severity = 'Low'

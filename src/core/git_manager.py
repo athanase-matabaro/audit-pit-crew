@@ -217,7 +217,11 @@ class GitManager:
             is_excluded = any(fnmatch.fnmatch(f_path, pattern) for pattern in exclude_patterns)
             
             if is_target and not is_excluded:
-                filtered_files.append(os.path.join(workspace, f_path))
+                full_path = os.path.join(workspace, f_path)
+                if os.path.exists(full_path):
+                    filtered_files.append(full_path)
+                else:
+                    logger.debug(f"Skipping deleted or missing file: {f_path}")
 
         logger.info(f"✅ Found {len(filtered_files)} changed files after applying extensions ({target_extensions}) and exclusions.")
         return filtered_files
