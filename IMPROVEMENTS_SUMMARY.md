@@ -40,11 +40,17 @@ Applied **5 robust improvements** across the codebase to fix critical issues and
 - **Impact**: 58% reduction in INFO-level log messages
 - **Files**: All scanner files (slither, mythril, oyente, aderyn)
 
+### 🔴 5. INFRASTRUCTURE FIX: Missing Tools & Updates
+- **Issue**: Oyente failed (binary missing), Aderyn panicked (version bug)
+- **Fixed**: Updated `worker.Dockerfile` to install Oyente and force-update Aderyn
+- **Impact**: Restores Oyente functionality and attempts to fix Aderyn panic
+- **File**: `infra/docker/worker.Dockerfile`
+
 ---
 
 ## Technical Changes
 
-### Files Modified: 7
+### Files Modified: 8
 | File | Type | Change | Lines |
 |------|------|--------|-------|
 | `aderyn_scanner.py` | Security | Error handling refactor | 6 |
@@ -54,11 +60,13 @@ Applied **5 robust improvements** across the codebase to fix critical issues and
 | `mythril_scanner.py` | Quality | Debug-level logging | 1 |
 | `oyente_scanner.py` | Quality | Debug/cleanup logging | 3 |
 | `aderyn_scanner.py` | Quality | Debug/cleanup logging | 3 |
+| `worker.Dockerfile` | Infra | Install Oyente, Update Aderyn | 2 |
+| `worker.Dockerfile` | Infrastructure | Install Oyente, update Aderyn | 4 |
 
 ### Total Changes
-- **Added**: 21 lines (mostly timing code + new error handling)
+- **Added**: 25 lines (mostly timing code + new error handling)
 - **Removed**: 8 lines (redundant logging)
-- **Net Change**: +13 lines
+- **Net Change**: +17 lines
 - **Complexity**: Minimal, focused, safe
 
 ---

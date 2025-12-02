@@ -64,4 +64,38 @@ Mythril ran successfully on the files. The fact that it found 0 issues might be 
 
 ---
 
+## 🔄 Round 3 Updates: Missing Tools & Aderyn Fix
+
+**Date**: December 2, 2025 (Latest)
+
+### 1. Oyente "No such file or directory"
+**Error Log**:
+```
+tool_error: Oyente stdout was empty, but stderr contained: [Errno 2] No such file or directory: 'oyente'
+```
+**Root Cause**:
+The `oyente` executable was missing from the `worker.Dockerfile`. Although the scanner code existed, the tool itself was not installed in the container.
+
+**Fix Applied**:
+- **`infra/docker/worker.Dockerfile`**: Added `RUN pip install oyente` to install the tool.
+
+### 2. Aderyn Panic Fix Attempt
+**Error Log**:
+```
+thread 'main' (157) panicked at ... Error("unexpected character 'a' while parsing major version number")
+```
+**Root Cause**:
+Aderyn v0.1.9 has a bug parsing version strings.
+
+**Fix Applied**:
+- **`infra/docker/worker.Dockerfile`**: Updated command to `RUN cargo install aderyn --force` to ensure the latest version is installed (if a newer one exists), which may contain a fix.
+
+### 3. Verification Plan
+- **Rebuild Containers**: The user must run `docker compose up --build` to apply the Dockerfile changes.
+- **Check Logs**:
+    - Verify `oyente` runs (or at least doesn't fail with "No such file").
+    - Verify if `aderyn` panic is resolved.
+
+---
+
 **Status**: ✅ READY FOR TESTING

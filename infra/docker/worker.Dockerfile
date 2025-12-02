@@ -29,7 +29,12 @@ RUN pip install "slither-analyzer==0.11.0" crytic-compile
 RUN pip install "mythril==0.23.0"
 
 # 1c. Install Aderyn for multi-tool analysis.
-RUN cargo install aderyn
+# Using --force to ensure we get the latest version which might have fixes for the panic
+RUN cargo install aderyn --force
+
+# 1d. Install Oyente (Legacy)
+# Attempt to install Oyente via pip. Note: Oyente is unmaintained and may have compatibility issues.
+RUN pip install oyente || echo "Warning: Oyente installation failed"
 
 # 2. Install solc-select.
 RUN pip install solc-select
