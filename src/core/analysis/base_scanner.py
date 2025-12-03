@@ -1,5 +1,5 @@
 import logging
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, TYPE_CHECKING, Tuple
 from abc import ABC, abstractmethod
 
 if TYPE_CHECKING:
@@ -40,7 +40,7 @@ class BaseScanner(ABC):
     SEVERITY_MAP = {'informational': 1, 'low': 2, 'medium': 3, 'high': 4}
 
     @abstractmethod
-    def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> List[Dict[str, Any]]:
+    def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
         """
         Run the scanner on the target path and return a list of issues.
         
@@ -50,9 +50,12 @@ class BaseScanner(ABC):
             config: Optional ScanConfig object containing filtering rules
             
         Returns:
-            List of issue dictionaries with standard format
+            A tuple containing:
+                - List of issue dictionaries with standard format
+                - Dictionary of log file paths for each tool
         """
         pass
+
 
     @staticmethod
     def get_issue_fingerprint(issue: Dict[str, Any]) -> str:
@@ -65,6 +68,18 @@ class BaseScanner(ABC):
         line = issue.get('line', 0)
         tool = issue.get('tool', 'unknown-tool')
         return f"{tool}|{issue_type}|{file_path}|{line}"
+
+    @staticmethod
+    def diff_issues(current_issues: List[Dict[str, Any]], baseline_issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Compares current issues against a baseline and returns only the new issues.
+        """
+        baseline_fingerprints = {BaseScanner.get_issue_fingerprint(issue) for issue in baseline_issues}
+        new_issues = [
+            issue for issue in current_issues 
+            if BaseScanner.get_issue_fingerprint(issue) not in baseline_fingerprints
+        ]
+        return new_issues
 
     def _filter_by_severity(self, issues: List[Dict[str, Any]], min_severity: str) -> List[Dict[str, Any]]:
         """

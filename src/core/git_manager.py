@@ -217,7 +217,15 @@ class GitManager:
             is_excluded = any(fnmatch.fnmatch(f_path, pattern) for pattern in exclude_patterns)
             
             if is_target and not is_excluded:
-                filtered_files.append(os.path.join(workspace, f_path))
+                full_path = os.path.join(workspace, f_path)
+                # Use isfile to ensure it's a valid file (not dir) and exists
+                if os.path.isfile(full_path):
+                    filtered_files.append(full_path)
+                else:
+                    if os.path.exists(full_path):
+                        logger.warning(f"⚠️ Skipping non-file object (directory?): {full_path}")
+                    else:
+                        logger.debug(f"Skipping deleted or missing file: {full_path}")
 
         logger.info(f"✅ Found {len(filtered_files)} changed files after applying extensions ({target_extensions}) and exclusions.")
         return filtered_files
@@ -308,7 +316,12 @@ class GitManager:
             if not is_ignored:
                 # Build full path using repo_dir (the actual repository root)
                 full_path = os.path.join(repo_dir, f_path)
-                filtered_files.append(full_path)
+                
+                # Verify file exists (it might have been deleted in the PR)
+                if os.path.exists(full_path):
+                    filtered_files.append(full_path)
+                else:
+                    logger.debug(f"Skipping deleted or missing file: {f_path}")
         
         logger.info(
             f"✅ Found {len(filtered_files)} changed Solidity files after applying config filters "

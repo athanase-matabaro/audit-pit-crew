@@ -38,3 +38,10 @@ services:
       - .:/usr/src/app
       # Note: The GITHUB_PRIVATE_KEY_PATH in your .env must point to
       # the file inside this volume, e.g., /usr/src/app/my-key.pem
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4096M
+    mem_limit: 4096m
+    cpus: '2.0'

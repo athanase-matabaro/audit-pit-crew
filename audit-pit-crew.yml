@@ -1,0 +1,13 @@
+contracts_path: "sol_test"
+ignore_paths:
+  - tests/**
+  - docs/**
+tools:
+  slither:
+    enabled: true
+  mythril:
+    enabled: true
+  oyente:
+    enabled: true
+  aderyn:
+    enabled: true

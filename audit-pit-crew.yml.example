@@ -23,3 +23,13 @@ scan:
   # Issues below this severity level will be filtered out
   # Default: "Low"
   min_severity: "Medium"
+
+  # Security analysis tools to run
+  # Available tools: slither, mythril, oyente, aderyn
+  # Note: Oyente is unmaintained (pip package broken)
+  # Note: Aderyn may require specific version - v0.1.9 has a panic bug
+  # Default: ["slither", "mythril"] - reliable baseline
+  enabled_tools:
+    - slither
+    - mythril
+    # - aderyn  # Uncomment when using aderyn >= v0.3.0

@@ -1,9 +1,9 @@
-import subprocess
 import json
 import os
 import logging
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
+from src.core.tools.run_tool import run_tool
 from src.core.analysis.base_scanner import BaseScanner, MythrilExecutionError
 
 if TYPE_CHECKING:
@@ -11,6 +11,10 @@ if TYPE_CHECKING:
 
 # Configure a logger for this module
 logger = logging.getLogger(__name__)
+
+# Set environment variable to prevent Mythril from making network calls during import
+# This helps avoid "Connection reset by peer" errors when solcx tries to fetch version list
+os.environ.setdefault('SOLCX_BINARY_PATH_PREFIX', '/root/.solcx')
 
 
 class MythrilScanner(BaseScanner):
@@ -43,56 +47,51 @@ class MythrilScanner(BaseScanner):
         # Append common flags (--max-depth 3 for better vulnerability detection)
         # Higher depth = more thorough analysis but slower execution
         # --max-depth 3 = ~30 seconds per scan (good balance)
-        cmd.extend(["--max-depth", "3", "--json"])
+        cmd.extend(["--max-depth", "3", "-o", "json"])
 
         logger.info(f"Executing Mythril command: {' '.join(cmd)}")
 
+        rc, stdout, stderr, out_path, err_path = run_tool(cmd, cwd=target_path, timeout=300)
+
+        logger.info(f"Mythril stdout log: {out_path}")
+        logger.info(f"Mythril stderr log: {err_path}")
+
+        if not stdout.strip():
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            if stderr_str.strip():
+                logger.error(f"tool_error: Mythril stdout was empty, but stderr contained: {stderr_str}")
+                raise MythrilExecutionError(f"Mythril Scan Failed. Stderr: {stderr_str}")
+            else:
+                logger.info("tool_no_output: Mythril stdout and stderr were empty. No issues found.")
+                return {"issues": []}
+
+        if rc != 0:
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            logger.error(f"❌ Mythril execution failed with exit code {rc}")
+            if stderr_str:
+                logger.error(f"Mythril STDERR: {stderr_str}")
+            raise MythrilExecutionError(f"Mythril Scan Failed. Details: {stderr_str}")
+
         try:
-            result = subprocess.run(
-                cmd,
-                cwd=target_path,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=300
-            )
-
-            # Try to parse JSON output from stdout
-            json_output = None
-            try:
-                json_output = json.loads(result.stdout)
-            except json.JSONDecodeError:
-                pass
-
+            json_output = json.loads(stdout)
+            logger.info(f"Mythril analysis finished (Exit Code: {rc}). Issues found.")
+            return json_output
+        except json.JSONDecodeError:
             # If no valid JSON, try to read from output file
-            if not json_output and os.path.exists(output_filepath):
+            if os.path.exists(output_filepath):
                 try:
                     with open(output_filepath, 'r') as f:
                         json_output = json.load(f)
+                        logger.info(f"Mythril analysis finished (Exit Code: {rc}). Issues found.")
+                        return json_output
                 except (FileNotFoundError, json.JSONDecodeError):
                     pass
+            
+            stderr_str = stderr.decode('utf-8', errors='ignore')
+            logger.error(f"Mythril output was not valid JSON. Stderr: {stderr_str}")
+            raise MythrilExecutionError(f"Mythril Scan Failed. Output was not valid JSON. Stderr: {stderr_str}")
 
-            if not json_output:
-                # Mythril might not find issues, which is okay
-                logger.info("Mythril analysis completed with no JSON output (likely no issues found).")
-                if result.stderr:
-                    logger.debug(f"Mythril stderr: {result.stderr}")
-                if result.returncode != 0 and result.returncode != 1:
-                    logger.debug(f"Mythril return code: {result.returncode}, stdout: {result.stdout[:500]}")
-                return {"issues": []}
 
-            logger.info(f"Mythril analysis finished (Exit Code: {result.returncode}). Issues found.")
-            return json_output
-
-        except subprocess.TimeoutExpired:
-            logger.error("❌ Mythril execution timed out.")
-            raise MythrilExecutionError("Mythril Scan Failed. Execution timed out after 300 seconds.")
-        except FileNotFoundError:
-            logger.error("❌ Mythril CLI not found. Is it installed?")
-            raise MythrilExecutionError("Mythril Scan Failed. Mythril CLI not found.")
-        except Exception as e:
-            logger.error(f"❌ Mythril execution failed: {e}")
-            raise MythrilExecutionError(f"Mythril Scan Failed. Details: {str(e)}")
 
     def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> List[Dict[str, Any]]:
         """
@@ -108,20 +107,19 @@ class MythrilScanner(BaseScanner):
         """
         logger.info(f"🔍 Starting Mythril scan on: {target_path}")
 
+        if files is not None and len(files) == 0:
+            logger.info("⚠️ No files provided for Mythril scan. Skipping.")
+            return []
+
         relative_files = None
         if files:
             relative_files = [os.path.relpath(f, target_path) for f in files]
 
-        try:
-            raw_output = self._execute_mythril(target_path, relative_files=relative_files)
-        except MythrilExecutionError:
-            # Return empty list if Mythril fails (it's not critical)
-            logger.warning("⚠️ Mythril scan failed, continuing without Mythril results.")
-            return []
+        raw_output = self._execute_mythril(target_path, relative_files=relative_files)
 
         # Extract min_severity from config, default to 'Low'
         min_severity = config.get_min_severity() if config else 'Low'
-        logger.info(f"🎯 Mythril: Filtering issues with minimum severity: {min_severity}")
+        logger.debug(f"🎯 Mythril: Filtering issues with minimum severity: {min_severity}")
 
         clean_issues: List[Dict[str, Any]] = []
 

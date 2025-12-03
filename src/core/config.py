@@ -19,10 +19,23 @@ class ScanConfig(BaseModel):
         description="Glob patterns to exclude from scanning"
     )
     min_severity: Severity = Field(default="Low", description="Minimum severity to report")
+    # Enabled tools configuration
+    # - Slither: Works offline with pre-installed solc, highly reliable (DEFAULT)
+    # - Mythril: Patched to handle network failures (DEFAULT)
+    # - Aderyn: v0.1.9 has bugs, v0.6.5+ from GitHub may fail to install (OPT-IN)
+    # - Oyente: Unmaintained, broken pip package (OPT-IN)
+    enabled_tools: List[str] = Field(
+        default_factory=lambda: ["slither", "mythril"],
+        description="List of security analysis tools to run. Options: slither, mythril, aderyn, oyente"
+    )
 
     def get_min_severity(self) -> str:
         """Returns the minimum severity level as a string."""
         return self.min_severity
+    
+    def is_tool_enabled(self, tool_name: str) -> bool:
+        """Check if a specific tool is enabled in configuration."""
+        return tool_name.lower() in [t.lower() for t in self.enabled_tools]
 
 
 class AuditConfig(BaseModel):

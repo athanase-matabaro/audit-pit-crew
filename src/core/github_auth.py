@@ -2,7 +2,7 @@ import time
 import jwt
 import requests
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any
 from src.config import settings # Assuming settings.GITHUB_APP_ID and GITHUB_PRIVATE_KEY_PATH exist
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,7 @@ class GitHubAuth:
         # Configuration setup (ensure these settings exist in your .env/config)
         self.app_id = settings.GITHUB_APP_ID
         self.private_key = self._load_private_key(settings.GITHUB_PRIVATE_KEY_PATH)
+        self.token_cache: Dict[int, Dict[str, Any]] = {} # Cache format: {installation_id: {'token': '...', 'expires_at': timestamp}}
 
     def _load_private_key(self, path: str) -> str:
         """Loads the private key content from the specified file path."""
@@ -53,6 +54,12 @@ class GitHubAuth:
         Exchanges a JWT for a short-lived Installation Access Token.
         This token is used by the worker to post comments.
         """
+        # Check cache first
+        cached_token_info = self.token_cache.get(installation_id)
+        if cached_token_info and cached_token_info['expires_at'] > time.time() + 300: # Refresh 5 minutes before expiry
+            logger.debug(f"🔑 Using cached token for installation ID {installation_id}.")
+            return cached_token_info['token']
+
         jwt_token = self._generate_jwt()
         
         headers = {
@@ -68,8 +75,15 @@ class GitHubAuth:
             response.raise_for_status()
             token_data = response.json()
             
-            # The token is valid for one hour
-            logger.info(f"🔑 Successfully fetched installation token for ID {installation_id}.")
+            # The token is valid for one hour (3600 seconds)
+            expires_in = token_data.get("expires_in", 3600) # Default to 1 hour if not specified
+            expires_at = int(time.time()) + expires_in
+            
+            self.token_cache[installation_id] = {
+                'token': token_data.get("token"),
+                'expires_at': expires_at
+            }
+            logger.info(f"🔑 Successfully fetched and cached installation token for ID {installation_id}.")
             return token_data.get("token")
 
         except requests.exceptions.HTTPError as e:
