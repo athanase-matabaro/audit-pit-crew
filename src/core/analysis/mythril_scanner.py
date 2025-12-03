@@ -12,6 +12,10 @@ if TYPE_CHECKING:
 # Configure a logger for this module
 logger = logging.getLogger(__name__)
 
+# Set environment variable to prevent Mythril from making network calls during import
+# This helps avoid "Connection reset by peer" errors when solcx tries to fetch version list
+os.environ.setdefault('SOLCX_BINARY_PATH_PREFIX', '/root/.solcx')
+
 
 class MythrilScanner(BaseScanner):
     """
