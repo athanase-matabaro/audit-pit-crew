@@ -142,6 +142,36 @@ class UnifiedScanner:
         status_str = ', '.join([f'{k}: {v}' for k, v in tool_status.items()])
         logger.info(f"📋 Tool status summary: {status_str}")
         
+        # Store last run info for PDF report generation
+        self._last_run_info = {
+            "tools_used": [s.TOOL_NAME for s in self.scanners],
+            "tool_timings": tool_timings,
+            "tool_status": tool_status,
+            "total_time": total_time,
+        }
+        
         logger.info(f"🎯 UnifiedScanner: Completed in {total_time:.2f}s total. Found {len(all_issues)} total unique issues across all tools.")
         return all_issues, all_log_paths
+
+    def get_tools_used(self) -> List[str]:
+        """
+        Returns the list of tools used in the last scan.
+        
+        Returns:
+            List of tool names that were used in the most recent scan
+        """
+        if hasattr(self, '_last_run_info'):
+            return self._last_run_info.get("tools_used", [])
+        return [s.TOOL_NAME for s in self.scanners] if self.scanners else []
+
+    def get_scan_stats(self) -> Dict[str, Any]:
+        """
+        Returns statistics from the last scan.
+        
+        Returns:
+            Dictionary with tool timings, status, and total time
+        """
+        if hasattr(self, '_last_run_info'):
+            return self._last_run_info
+        return {}
 
