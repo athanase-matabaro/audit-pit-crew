@@ -13,6 +13,7 @@ from src.core.github_checks import GitHubChecksManager
 from src.core.github_auth import GitHubAuth
 from src.core.config import AuditConfigManager
 from src.core.redis_client import RedisClient
+from src.core.remediation import RemediationSuggester
 
 logger = logging.getLogger(__name__)
 
@@ -140,25 +141,34 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             
             logger.info(f"✅ Scan complete. Found {len(new_issues)} new issues ({len(pr_issues)} total issues in PR).")
             
+            # --- Enrich issues with remediation suggestions ---
+            suggester = RemediationSuggester()
+            enriched_issues = suggester.enrich_issues(new_issues)
+            stats = suggester.get_stats()
+            logger.info(
+                f"💡 Remediation: {stats['suggestions_added']} of {stats['total_processed']} "
+                f"issues have fix suggestions"
+            )
+            
             # --- Update GitHub Check Run with results ---
             check_conclusion = None
             if check_run_id and checks_manager:
                 check_conclusion = checks_manager.report_scan_results(
                     check_run_id=check_run_id,
-                    issues=new_issues,
+                    issues=enriched_issues,
                     block_on_severity=audit_config.scan.block_on_severity,
                     baseline_count=len(baseline_issues)
                 )
                 logger.info(f"📋 Check run conclusion: {check_conclusion}")
             
-            # --- Post PR comment report ---
+            # --- Post PR comment report with enriched issues ---
             reporter = GitHubReporter(
                 token=token, 
                 repo_owner=pr_owner, 
                 repo_name=pr_repo, 
                 pr_number=pr_context['pr_number']
             )
-            reporter.post_report(new_issues, log_paths=all_log_paths) 
+            reporter.post_report(enriched_issues, baseline_issue_count=len(baseline_issues), log_paths=all_log_paths) 
             logger.info(f"📤 Successfully posted report for PR #{pr_context['pr_number']}.")
 
             return {
