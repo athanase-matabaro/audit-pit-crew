@@ -149,11 +149,15 @@ class SlitherScanner(BaseScanner):
             return [], log_paths
 
         for issue in raw_output["results"]["detectors"]:
+            # Slither reports impact/importance in 'impact' field. Normalize and map to severity rank.
             severity = issue.get('impact', 'Informational').capitalize()
-            severity_level = self.SEVERITY_MAP.get(severity.lower(), 1)
+            severity_level = self.SEVERITY_MAP.get(severity.lower(), self.SEVERITY_MAP['informational'])
+
+            # Determine required minimum severity rank (default to 'Low')
+            min_rank = self.SEVERITY_MAP.get(min_severity.lower(), self.SEVERITY_MAP['low'])
 
             # Skip issues below the minimum severity threshold
-            if severity_level < self.SEVERITY_MAP.get(min_severity.lower(), 2):
+            if severity_level < min_rank:
                 logger.debug(f"Slither: Filtering out {severity} issue: {issue.get('check', 'Unknown')}")
                 continue
 

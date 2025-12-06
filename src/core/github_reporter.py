@@ -96,7 +96,7 @@ class GitHubReporter:
             logger.error(f"❌ An unexpected error occurred: {e}")
             raise e
 
-    def post_error_report(self, error_message: str):
+    def post_error_report(self, error_message: str, log_paths: Optional[Dict[str, List[str]]] = None):
         """
         Posts a formatted error report to the GitHub Pull Request.
         """
@@ -110,6 +110,34 @@ class GitHubReporter:
             f"Please check the CI/CD logs for more information."
         )
         self.post_comment(body)
+
+    def post_skipped_report(self, reason: str, config_summary: Optional[str] = None):
+        """
+        Posts an informational comment when the scan is skipped.
+        
+        Args:
+            reason: Why the scan was skipped
+            config_summary: Optional summary of the active configuration
+        """
+        body_parts = [
+            f"{self.run_tag}\n\n",
+            f"## ⏭️ Audit Pit-Crew Scan Skipped\n\n",
+            f"**Reason:** {reason}\n\n",
+        ]
+        
+        if config_summary:
+            body_parts.append(
+                f"<details>\n<summary>Active Configuration</summary>\n\n"
+                f"```yaml\n{config_summary}\n```\n\n"
+                f"</details>\n\n"
+            )
+        
+        body_parts.append(
+            "_This PR does not contain changes to Solidity smart contracts. "
+            "The security scan will run automatically when `.sol` files are modified._"
+        )
+        
+        self.post_comment("".join(body_parts))
 
     def post_comment(self, body: str):
         """

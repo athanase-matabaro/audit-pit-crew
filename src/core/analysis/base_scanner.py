@@ -37,7 +37,14 @@ class BaseScanner(ABC):
     """
 
     # Severity level mapping (numeric for comparison)
-    SEVERITY_MAP = {'informational': 1, 'low': 2, 'medium': 3, 'high': 4}
+    # Map to increasing ranks so comparisons are simple: low=1 < medium=2 < high=3 < critical=4
+    SEVERITY_MAP = {
+        'informational': 0,
+        'low': 1,
+        'medium': 2,
+        'high': 3,
+        'critical': 4,
+    }
 
     @abstractmethod
     def run(self, target_path: str, files: Optional[List[str]] = None, config: Optional['AuditConfig'] = None) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
@@ -92,7 +99,8 @@ class BaseScanner(ABC):
         Returns:
             Filtered list of issues
         """
-        min_severity_level = self.SEVERITY_MAP.get(min_severity.lower(), 2)
+        # Default minimum severity is 'Low' -> rank 1
+        min_severity_level = self.SEVERITY_MAP.get(min_severity.lower(), 1)
         filtered_issues = []
 
         for issue in issues:

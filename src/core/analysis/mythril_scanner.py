@@ -28,6 +28,8 @@ class MythrilScanner(BaseScanner):
         """
         Executes the mythril command and returns the JSON output.
         Raises MythrilExecutionError on failure.
+        
+        Returns a dict with 'issues' list and 'scanned_files' for file attribution.
         """
         output_filename = "mythril_report.json"
         output_filepath = os.path.join(target_path, output_filename)
@@ -35,11 +37,15 @@ class MythrilScanner(BaseScanner):
         # --- Command Construction ---
         cmd = ["myth", "analyze"]
 
+        # Track which files we're scanning for file attribution
+        scanned_files = []
+
         # For files, analyze each file individually
         if relative_files:
             logger.info(f"⚡ Mythril: Running partial scan on: {relative_files}")
             # Mythril needs full file paths
             cmd.extend(relative_files)
+            scanned_files = relative_files
         else:
             logger.info("⚙️ Mythril: Running full scan on repository root.")
             cmd.append(".")
@@ -63,7 +69,7 @@ class MythrilScanner(BaseScanner):
                 raise MythrilExecutionError(f"Mythril Scan Failed. Stderr: {stderr_str}")
             else:
                 logger.info("tool_no_output: Mythril stdout and stderr were empty. No issues found.")
-                return {"issues": []}
+                return {"issues": [], "scanned_files": scanned_files}
 
         if rc != 0:
             stderr_str = stderr.decode('utf-8', errors='ignore')
@@ -74,6 +80,7 @@ class MythrilScanner(BaseScanner):
 
         try:
             json_output = json.loads(stdout)
+            json_output['scanned_files'] = scanned_files
             logger.info(f"Mythril analysis finished (Exit Code: {rc}). Issues found.")
             return json_output
         except json.JSONDecodeError:
@@ -82,6 +89,7 @@ class MythrilScanner(BaseScanner):
                 try:
                     with open(output_filepath, 'r') as f:
                         json_output = json.load(f)
+                        json_output['scanned_files'] = scanned_files
                         logger.info(f"Mythril analysis finished (Exit Code: {rc}). Issues found.")
                         return json_output
                 except (FileNotFoundError, json.JSONDecodeError):
@@ -149,24 +157,61 @@ class MythrilScanner(BaseScanner):
                 continue
 
             # Extract file and line information
-            file_path = 'Unknown'
+            # Mythril doesn't provide file paths directly in issues, but we know which files we scanned
+            scanned_files = raw_output.get('scanned_files', [])
+            
+            # Get file from scanned files (Mythril typically scans one file at a time in our setup)
+            if scanned_files and len(scanned_files) == 1:
+                file_path = scanned_files[0]
+            elif scanned_files:
+                # Multiple files - try to match by contract name if available
+                contract_name = issue.get('contract', '')
+                file_path = scanned_files[0]  # Default to first file
+                for f in scanned_files:
+                    if contract_name.lower() in f.lower():
+                        file_path = f
+                        break
+            else:
+                file_path = 'Unknown'
+            
+            # Parse source map for line information
+            # Mythril provides sourceMap in format "offset:length:sourceIndex:jump"
+            source_map = issue.get('sourceMap', '')
             line_number = 0
-            if 'locations' in issue and issue['locations']:
-                location = issue['locations'][0]
-                if isinstance(location, dict):
-                    file_path = location.get('sourceMap', 'Unknown')
-                    line_number = location.get('line', 0)
+            if source_map and source_map != 'Unknown':
+                byte_offset = self._parse_source_map(source_map)
+                # Approximate line number from byte offset (rough estimate: ~40 chars per line)
+                # This is imprecise but better than 0
+                if byte_offset > 0:
+                    line_number = max(1, byte_offset // 40)
 
             clean_issues.append({
                 "tool": self.TOOL_NAME,
                 "type": issue.get('title', 'Unknown'),
                 "severity": severity,
-                "confidence": issue.get('confidence', 'Low').capitalize(),
+                "confidence": issue.get('confidence', 'Low').capitalize() if issue.get('confidence') else 'Medium',
                 "description": issue.get('description', 'No description'),
                 "file": file_path,
                 "line": int(line_number) if line_number else 0,
+                "function": issue.get('function', 'Unknown'),
+                "swc_id": issue.get('swc-id', ''),
                 "raw_data": issue
             })
 
         logger.info(f"Mythril found {len(clean_issues)} total issues meeting the severity threshold (Min: {min_severity}).")
         return clean_issues
+
+    def _parse_source_map(self, source_map: str) -> int:
+        """
+        Parse Solidity source map format to extract line offset.
+        Source map format: offset:length:sourceIndex:jump
+        
+        Returns the byte offset which can be used for approximate line location.
+        """
+        try:
+            parts = source_map.split(':')
+            if parts:
+                return int(parts[0])  # Return byte offset
+        except (ValueError, IndexError):
+            pass
+        return 0

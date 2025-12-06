@@ -284,6 +284,21 @@ class GitManager:
         all_changed_files = output.splitlines() if output else []
         logger.info(f"Found {len(all_changed_files)} total changed files before filtering.")
         
+        # Sanitize contracts_path to prevent path traversal and ensure it's relative to the repo
+        raw_contracts_path = (config.scan.contracts_path or ".").strip()
+        # Protect against absolute paths and parent traversal
+        if os.path.isabs(raw_contracts_path):
+            logger.warning(f"⚠️ Absolute contracts_path detected ('{raw_contracts_path}'). Falling back to root '.'")
+            contracts_path = "."
+        else:
+            # Normalize and reject upward traversal outside repo
+            normalized = os.path.normpath(raw_contracts_path)
+            if normalized.startswith('..'):
+                logger.warning(f"⚠️ contracts_path contains upward traversal ('{raw_contracts_path}'). Falling back to root '.'")
+                contracts_path = "."
+            else:
+                contracts_path = normalized
+
         # Filter files based on:
         # 1. Must be a .sol file
         # 2. Must be within contracts_path (or root if contracts_path is ".")
@@ -296,8 +311,6 @@ class GitManager:
                 continue
             
             # Check if it's within the contracts_path
-            contracts_path = config.scan.contracts_path.rstrip('/')
-            
             if contracts_path != ".":
                 # If contracts_path is specified, ensure file is under that path
                 if not f_path.startswith(contracts_path + "/") and f_path != contracts_path:
@@ -310,7 +323,7 @@ class GitManager:
             # Check if it matches any ignore patterns
             is_ignored = any(
                 fnmatch.fnmatch(f_path, pattern) or fnmatch.fnmatch(relative_to_contracts, pattern)
-                for pattern in config.scan.ignore_paths
+                for pattern in (config.scan.ignore_paths or [])
             )
             
             if not is_ignored:
