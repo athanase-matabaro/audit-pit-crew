@@ -73,6 +73,12 @@ docker-compose.override.yml
 # Environment variables
 .env
 .env.*
+!.env.example
+
+# Private keys and secrets
+*.pem
+*.key
+*private-key*
 
 # Temporary files
 *.tmp
