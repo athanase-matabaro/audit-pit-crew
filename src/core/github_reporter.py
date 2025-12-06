@@ -5,9 +5,11 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
 class GitHubReporter:
     """
     Handles formatting and posting security scan results as a GitHub PR comment.
+    Includes remediation suggestions when available.
     """
 
     def __init__(self, token: str, repo_owner: str, repo_name: str, pr_number: int):
@@ -20,12 +22,73 @@ class GitHubReporter:
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github.v3+json",
         }
-        self.run_tag = "<!-- audit-pit-crew-report-v1 -->"
+        self.run_tag = "<!-- audit-pit-crew-report-v2 -->"
+
+    def _format_remediation(self, remediation: Optional[Dict[str, Any]]) -> str:
+        """
+        Format a remediation suggestion as Markdown.
+        
+        Args:
+            remediation: Remediation dictionary or None
+            
+        Returns:
+            Markdown string with fix suggestion
+        """
+        if not remediation:
+            return ""
+        
+        lines = [
+            "",
+            "#### 💡 Suggested Fix",
+            "",
+            f"**{remediation.get('summary', 'No summary available')}**",
+            "",
+        ]
+        
+        # Add explanation if available
+        explanation = remediation.get('explanation', '').strip()
+        if explanation:
+            # Truncate long explanations
+            if len(explanation) > 500:
+                explanation = explanation[:500] + "..."
+            lines.append(explanation)
+            lines.append("")
+        
+        # Add code snippet in collapsible section
+        fix_snippet = remediation.get('fix_snippet', '').strip()
+        if fix_snippet:
+            lines.extend([
+                "<details>",
+                "<summary>📝 Code Pattern (click to expand)</summary>",
+                "",
+                "```solidity",
+                fix_snippet,
+                "```",
+                "",
+                "</details>",
+                "",
+            ])
+        
+        # Add references (limit to 3)
+        references = remediation.get('references', [])
+        if references:
+            lines.append("**📚 References:**")
+            for ref in references[:3]:
+                lines.append(f"- {ref}")
+            lines.append("")
+        
+        # Add risk context
+        risk_context = remediation.get('risk_context', '')
+        if risk_context:
+            lines.append(f"⚠️ _{risk_context}_")
+            lines.append("")
+        
+        return "\n".join(lines)
 
     def _format_report(self, issues: List[Dict[str, Any]], baseline_issue_count: int, log_paths: Optional[Dict[str, List[str]]] = None) -> str:
         """
         Formats the list of new issues into a comprehensive Markdown report,
-        including links to raw tool output logs.
+        including remediation suggestions and links to raw tool output logs.
         """
         report_parts = []
         report_parts.append(f"{self.run_tag}\n\n## 🛡️ Audit Pit-Crew Report\n\n")
@@ -36,24 +99,50 @@ class GitHubReporter:
                 f"ℹ️ _The baseline for the `main` branch contains **{baseline_issue_count}** existing issue(s)._"
             )
         else:
+            # Count issues with remediation suggestions
+            issues_with_fixes = sum(1 for i in issues if i.get('remediation'))
+            
             report_parts.append(
-                f"## 🚨 Audit Pit-Crew Security Report\n\n"
-                f"Found **{len(issues)}** new issue(s) in this PR. "
-                f"The `main` branch baseline has **{baseline_issue_count}** existing issue(s)."
+                f"Found **{len(issues)}** new issue(s) in this PR"
+            )
+            
+            if issues_with_fixes > 0:
+                report_parts.append(
+                    f" ({issues_with_fixes} with fix suggestions)"
+                )
+            
+            report_parts.append(
+                f".\n\n"
+                f"The `main` branch baseline has **{baseline_issue_count}** existing issue(s).\n\n"
             )
 
-            severity_order = {'High': 3, 'Medium': 2, 'Low': 1}
+            severity_order = {'Critical': 4, 'High': 3, 'Medium': 2, 'Low': 1}
             issues.sort(key=lambda x: severity_order.get(x['severity'], 0), reverse=True)
 
             for issue in issues:
-                emoji = "🔴" if issue['severity'] == "High" else "🟠"
-                report_parts.append(f"""
+                # Determine emoji based on severity
+                if issue['severity'] == "Critical":
+                    emoji = "🔴"
+                elif issue['severity'] == "High":
+                    emoji = "🔴"
+                elif issue['severity'] == "Medium":
+                    emoji = "🟠"
+                else:
+                    emoji = "🟡"
+                
+                # Get tool badge
+                tool = issue.get('tool', 'Unknown')
+                tool_badge = f"[{tool}]"
+                
+                # Build the issue section
+                issue_section = f"""
 ---
-### {emoji} {issue['severity']}: {issue['type']}
+### {emoji} {issue['severity']}: {issue['type']} {tool_badge}
 **File:** `{issue['file']}:{issue['line']}`
 **Confidence:** {issue['confidence']}
 
 > {issue['description'].strip().splitlines()[0]}
+
 <details>
 <summary>Click for Full Description</summary>
 
@@ -61,7 +150,13 @@ class GitHubReporter:
 {issue['description'].strip()}
 ```
 </details>
-""")
+"""
+                report_parts.append(issue_section)
+                
+                # Add remediation suggestion if available
+                remediation = issue.get('remediation')
+                if remediation:
+                    report_parts.append(self._format_remediation(remediation))
         
         # Add tool output logs if available
         if log_paths:
