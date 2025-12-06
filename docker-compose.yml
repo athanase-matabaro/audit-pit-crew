@@ -6,6 +6,11 @@ services:
     expose:
       - 6379
     restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   # The API Server (FastAPI)
   api:
@@ -17,7 +22,14 @@ services:
     env_file:
       - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     # Mount the project code
     volumes:
       - .:/usr/src/app
@@ -31,8 +43,10 @@ services:
     env_file:
       - .env
     depends_on:
-      - redis
-      - api
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
     # Mount only the necessary project path. (Removed redundant /app_root mount)
     volumes:
       - .:/usr/src/app
