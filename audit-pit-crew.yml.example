@@ -24,6 +24,13 @@ scan:
   # Default: "Low"
   min_severity: "Medium"
 
+  # THE BLOCKER: Minimum severity that causes the PR check to FAIL
+  # If any issue is found at or above this severity, the PR will be blocked
+  # Must be one of: "Low", "Medium", "High", "Critical"
+  # This enforces quality gates - PRs with High/Critical issues cannot merge
+  # Default: "High"
+  block_on_severity: "High"
+
   # Security analysis tools to run
   # Available tools: slither, mythril, oyente, aderyn
   # Note: Oyente is unmaintained (pip package broken)

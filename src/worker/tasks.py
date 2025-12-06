@@ -9,6 +9,7 @@ from src.core.git_manager import GitManager
 from src.core.analysis.scanner import UnifiedScanner, ToolExecutionError
 from src.core.analysis.base_scanner import BaseScanner
 from src.core.github_reporter import GitHubReporter
+from src.core.github_checks import GitHubChecksManager
 from src.core.github_auth import GitHubAuth
 from src.core.config import AuditConfigManager
 from src.core.redis_client import RedisClient
@@ -20,7 +21,7 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
     """
     Background task that clones, scans, and posts results. It operates in two modes:
     1. Differential Scan: For PRs, it scans changed files and reports only new issues
-       by comparing against a stored baseline.
+       by comparing against a stored baseline. Creates GitHub Check Runs for PR status.
     2. Baseline Scan: For pushes to the main branch, it performs a full scan and updates
        the security baseline in Redis.
     """
@@ -32,6 +33,8 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
     scanner = UnifiedScanner()
     redis_client = RedisClient()
     workspace = None
+    check_run_id = None  # Track check run for cleanup
+    checks_manager = None
     
     pr_context = pr_context or {}
     pr_owner = pr_context.get('owner')
@@ -64,6 +67,18 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                 logger.error("❌ Missing essential PR context (number, base_ref, or head_sha). Skipping.")
                 return {"status": "error", "message": "Missing essential PR context"}
 
+            # --- Create GitHub Check Run (The "Blocker") ---
+            checks_manager = GitHubChecksManager(
+                token=token,
+                repo_owner=pr_owner,
+                repo_name=pr_repo
+            )
+            check_run_id = checks_manager.create_check_run(head_sha=head_sha)
+            if check_run_id:
+                logger.info(f"📋 Created GitHub Check Run: {check_run_id}")
+            else:
+                logger.warning("⚠️ Failed to create check run. PR status will not be updated.")
+
             git.clone_repo(workspace, repo_url, token, shallow_clone=False)
             
             # Detect the actual repository root directory
@@ -73,6 +88,12 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             git.checkout_ref(repo_dir, head_sha)
             
             audit_config = AuditConfigManager.load_config(repo_dir)
+            logger.info(
+                f"Loaded config: min_severity={audit_config.scan.min_severity}, "
+                f"block_on_severity={audit_config.scan.block_on_severity}, "
+                f"contracts_path={audit_config.scan.contracts_path}, "
+                f"ignore_paths={audit_config.scan.ignore_paths}"
+            )
             
             changed_solidity_files = git.get_changed_solidity_files(
                 repo_dir, 
@@ -83,6 +104,30 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             
             if not changed_solidity_files:
                 logger.info("ℹ️ No target files changed in PR based on config. Skipping scan.")
+                # Report skipped status to check run
+                if check_run_id and checks_manager:
+                    checks_manager.report_skipped(check_run_id, "No Solidity files changed in this PR")
+                
+                # Post informational PR comment
+                try:
+                    reporter = GitHubReporter(
+                        token=token,
+                        repo_owner=pr_owner,
+                        repo_name=pr_repo,
+                        pr_number=pr_context['pr_number']
+                    )
+                    config_summary = (
+                        f"contracts_path: {audit_config.scan.contracts_path}\n"
+                        f"ignore_paths: {audit_config.scan.ignore_paths}"
+                    )
+                    reporter.post_skipped_report(
+                        reason="No Solidity (`.sol`) files were changed in this PR.",
+                        config_summary=config_summary
+                    )
+                    logger.info("📤 Posted skipped scan notification to PR.")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to post skipped notification: {e}")
+                
                 return {"status": "skipped", "message": "No target files changed"}
 
             logger.info(f"🔍 Starting security scan on: {repo_dir}")
@@ -95,6 +140,18 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             
             logger.info(f"✅ Scan complete. Found {len(new_issues)} new issues ({len(pr_issues)} total issues in PR).")
             
+            # --- Update GitHub Check Run with results ---
+            check_conclusion = None
+            if check_run_id and checks_manager:
+                check_conclusion = checks_manager.report_scan_results(
+                    check_run_id=check_run_id,
+                    issues=new_issues,
+                    block_on_severity=audit_config.scan.block_on_severity,
+                    baseline_count=len(baseline_issues)
+                )
+                logger.info(f"📋 Check run conclusion: {check_conclusion}")
+            
+            # --- Post PR comment report ---
             reporter = GitHubReporter(
                 token=token, 
                 repo_owner=pr_owner, 
@@ -104,7 +161,11 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             reporter.post_report(new_issues, log_paths=all_log_paths) 
             logger.info(f"📤 Successfully posted report for PR #{pr_context['pr_number']}.")
 
-            return {"status": "success", "new_issues_found": len(new_issues)}
+            return {
+                "status": "success", 
+                "new_issues_found": len(new_issues),
+                "check_conclusion": check_conclusion
+            }
 
         else:
             # --- BASELINE SCAN (MAIN BRANCH) ---
@@ -115,6 +176,12 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
             repo_dir = git.get_repo_dir(workspace)
             
             audit_config = AuditConfigManager.load_config(repo_dir)
+            logger.info(
+                f"Loaded config: min_severity={audit_config.scan.min_severity}, "
+                f"block_on_severity={audit_config.scan.block_on_severity}, "
+                f"contracts_path={audit_config.scan.contracts_path}, "
+                f"ignore_paths={audit_config.scan.ignore_paths}"
+            )
             
             baseline_issues, all_log_paths = scanner.run(repo_dir, config=audit_config.scan if audit_config else None)
             
@@ -129,6 +196,11 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
 
     except ToolExecutionError as e:
         logger.error(f"⚔️ Security scan failed during task {self.request.id}: {e}", exc_info=True)
+        
+        # Report error to check run
+        if check_run_id and checks_manager:
+            checks_manager.report_error(check_run_id, str(e))
+        
         if pr_context and pr_owner and pr_repo and token:
             try:
                 reporter = GitHubReporter(
@@ -146,6 +218,11 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
 
     except Exception as e:
         logger.error(f"❌ [Task {self.request.id}] An unexpected error occurred: {str(e)}", exc_info=True)
+        
+        # Report error to check run
+        if check_run_id and checks_manager:
+            checks_manager.report_error(check_run_id, f"Unexpected error: {str(e)}")
+        
         # Use retry logic for other transient network or API errors
         raise self.retry(exc=e, countdown=10, max_retries=2)
 

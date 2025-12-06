@@ -19,6 +19,10 @@ class ScanConfig(BaseModel):
         description="Glob patterns to exclude from scanning"
     )
     min_severity: Severity = Field(default="Low", description="Minimum severity to report")
+    block_on_severity: Severity = Field(
+        default="High", 
+        description="Minimum severity that causes PR check to fail. Issues at or above this level block the PR."
+    )
     # Enabled tools configuration
     # - Slither: Works offline with pre-installed solc, highly reliable (DEFAULT)
     # - Mythril: Patched to handle network failures (DEFAULT)
@@ -32,6 +36,10 @@ class ScanConfig(BaseModel):
     def get_min_severity(self) -> str:
         """Returns the minimum severity level as a string."""
         return self.min_severity
+    
+    def get_block_severity(self) -> str:
+        """Returns the blocking severity level as a string."""
+        return self.block_on_severity
     
     def is_tool_enabled(self, tool_name: str) -> bool:
         """Check if a specific tool is enabled in configuration."""
@@ -76,7 +84,7 @@ class AuditConfigManager:
                 return AuditConfig()
             
             # Parse and validate the configuration
-            audit_config = AuditConfig.parse_obj(config_data)
+            audit_config = AuditConfig.model_validate(config_data)
             logger.info(
                 f"✅ Configuration loaded successfully. "
                 f"Contracts path: {audit_config.scan.contracts_path}, "
