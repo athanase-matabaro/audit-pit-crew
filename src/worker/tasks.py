@@ -150,6 +150,21 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                 f"issues have fix suggestions"
             )
             
+            # --- Save scan result for PDF report generation ---
+            scan_result = {
+                "repo_owner": pr_owner,
+                "repo_name": pr_repo,
+                "branch": head_ref if 'head_ref' in locals() else pr_context.get('head_ref', 'unknown'),
+                "commit_sha": head_sha,
+                "pr_number": pr_number,
+                "issues": enriched_issues,
+                "tools_used": scanner.get_tools_used(),
+                "files_scanned": len(changed_solidity_files),
+                "scan_type": "differential",
+                "baseline_issue_count": len(baseline_issues),
+            }
+            redis_client.save_scan_result(pr_owner, pr_repo, scan_result)
+            
             # --- Update GitHub Check Run with results ---
             check_conclusion = None
             if check_run_id and checks_manager:
@@ -199,6 +214,19 @@ def scan_repo_task(self, repo_url: str, pr_context: Dict[str, Any] = None, **kwa
                 baseline_key = f"{pr_owner}:{pr_repo}"
                 redis_client.save_baseline_issues(baseline_key, baseline_issues)
                 logger.info(f"✅ Baseline saved to Redis: {len(baseline_issues)} issues.")
+                
+                # Save scan result for PDF report generation (baseline scans too)
+                scan_result = {
+                    "repo_owner": pr_owner,
+                    "repo_name": pr_repo,
+                    "branch": "main",
+                    "commit_sha": "HEAD",
+                    "issues": baseline_issues,
+                    "tools_used": scanner.get_tools_used(),
+                    "files_scanned": 0,  # Full scan, count not tracked
+                    "scan_type": "baseline",
+                }
+                redis_client.save_scan_result(pr_owner, pr_repo, scan_result)
             else:
                 logger.warning("⚠️ Missing repository owner/name, cannot save baseline.")
 

@@ -3,10 +3,14 @@ import hashlib
 import json
 import uvicorn
 import logging
+from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException, Depends, status, Header
+from fastapi.responses import Response
 from typing import Dict, Any, Optional
 from src.config import settings
-from src.worker.tasks import scan_repo_task 
+from src.worker.tasks import scan_repo_task
+from src.core.redis_client import RedisClient
+from src.core.reports.pdf_generator import PreAuditReportGenerator, ReportData, IssuesSummary
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +111,161 @@ async def github_webhook(
     except Exception as e:
         logger.error(f"Failed to process webhook: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error during task dispatch.")
+
+
+@app.get("/api/reports/{owner}/{repo}/pdf")
+async def get_pre_audit_pdf(owner: str, repo: str):
+    """
+    Generate and download a Pre-Audit Clearance Certificate PDF.
+    
+    Retrieves the latest scan results for the repository and generates
+    a professional PDF report suitable for sharing with investors.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        
+    Returns:
+        PDF file as downloadable response
+        
+    Raises:
+        404: No scan results found for this repository
+        500: PDF generation failed
+    """
+    logger.info(f"📄 PDF report requested for {owner}/{repo}")
+    
+    # Retrieve scan results from Redis
+    redis_client = RedisClient()
+    scan_result = redis_client.get_scan_result(owner, repo)
+    
+    if not scan_result:
+        logger.warning(f"⚠️ No scan results found for {owner}/{repo}")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No scan results found for {owner}/{repo}. Run a security scan first."
+        )
+    
+    try:
+        # Parse issues and count by severity
+        issues = scan_result.get("issues", [])
+        issues_summary = IssuesSummary()
+        
+        for issue in issues:
+            severity = issue.get("severity", "informational").lower()
+            if severity == "critical":
+                issues_summary.critical += 1
+            elif severity == "high":
+                issues_summary.high += 1
+            elif severity == "medium":
+                issues_summary.medium += 1
+            elif severity == "low":
+                issues_summary.low += 1
+            else:
+                issues_summary.informational += 1
+        
+        # Parse scan date
+        saved_at = scan_result.get("saved_at", datetime.utcnow().isoformat())
+        try:
+            scan_date = datetime.fromisoformat(saved_at.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            scan_date = datetime.utcnow()
+        
+        # Build report data
+        report_data = ReportData(
+            repo_owner=owner,
+            repo_name=repo,
+            scan_date=scan_date,
+            commit_sha=scan_result.get("commit_sha", "unknown"),
+            branch=scan_result.get("branch", "main"),
+            tools_used=scan_result.get("tools_used", ["Slither", "Mythril"]),
+            issues_summary=issues_summary,
+            issues=issues,
+            files_scanned=scan_result.get("files_scanned", 0),
+        )
+        
+        # Generate PDF
+        generator = PreAuditReportGenerator()
+        pdf_bytes = generator.generate(report_data)
+        
+        # Generate filename
+        date_str = scan_date.strftime("%Y%m%d")
+        filename = f"{owner}_{repo}_pre_audit_certificate_{date_str}.pdf"
+        
+        logger.info(f"✅ Generated PDF report for {owner}/{repo}: {len(pdf_bytes)} bytes")
+        
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Scan-Date": saved_at,
+                "X-Issues-Total": str(issues_summary.total),
+                "X-Clearance-Status": "PASSED" if issues_summary.blocking == 0 else "FAILED",
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to generate PDF report: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate PDF report: {str(e)}"
+        )
+
+
+@app.get("/api/reports/{owner}/{repo}/summary")
+async def get_scan_summary(owner: str, repo: str):
+    """
+    Get a summary of the latest scan results for a repository.
+    
+    This endpoint returns JSON summary data that can be used to display
+    scan status in dashboards or check if PDF generation is available.
+    
+    Args:
+        owner: Repository owner/organization name
+        repo: Repository name
+        
+    Returns:
+        JSON summary of scan results
+    """
+    redis_client = RedisClient()
+    scan_result = redis_client.get_scan_result(owner, repo)
+    
+    if not scan_result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No scan results found for {owner}/{repo}."
+        )
+    
+    # Count issues by severity
+    issues = scan_result.get("issues", [])
+    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "informational": 0}
+    
+    for issue in issues:
+        severity = issue.get("severity", "informational").lower()
+        if severity in severity_counts:
+            severity_counts[severity] += 1
+        else:
+            severity_counts["informational"] += 1
+    
+    blocking_count = severity_counts["critical"] + severity_counts["high"]
+    
+    return {
+        "repository": f"{owner}/{repo}",
+        "scan_date": scan_result.get("saved_at"),
+        "scan_type": scan_result.get("scan_type", "unknown"),
+        "branch": scan_result.get("branch", "unknown"),
+        "commit_sha": scan_result.get("commit_sha", "unknown"),
+        "tools_used": scan_result.get("tools_used", []),
+        "files_scanned": scan_result.get("files_scanned", 0),
+        "issues": {
+            "total": len(issues),
+            "by_severity": severity_counts,
+            "blocking": blocking_count,
+        },
+        "clearance_status": "PASSED" if blocking_count == 0 else "FAILED",
+        "pdf_available": True,
+    }
+
 
 # --- Running the Server (For local testing) ---
 
